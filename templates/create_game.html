@@ -39,7 +39,6 @@
       Multiple Table Mode
       <span class="badge" id="multipleTablesState">{% if last_game and last_game['multiple_tables'] %}ON{% else %}OFF{% endif %}</span>
     </label>
-    <p id="multipleTablesHint" style="margin-top:6px;">{% if last_game and last_game['multiple_tables'] %}Co-organizer features will be enabled for this game.{% else %}Turn this on to enable co-organizer features for this game.{% endif %}</p>
   </div>
   <div>
     <button class="btn" type="submit">Create Game</button>
@@ -75,16 +74,9 @@
   (function() {
     const toggle = document.getElementById('multipleTablesToggle');
     const state = document.getElementById('multipleTablesState');
-    const hint = document.getElementById('multipleTablesHint');
-    if (!toggle || !state || !hint) return;
+    if (!toggle || !state) return;
     function render() {
-      if (toggle.checked) {
-        state.textContent = 'ON';
-        hint.textContent = 'Co-organizer features will be enabled for this game.';
-      } else {
-        state.textContent = 'OFF';
-        hint.textContent = 'Turn this on to enable co-organizer features for this game.';
-      }
+      state.textContent = toggle.checked ? 'ON' : 'OFF';
     }
     toggle.addEventListener('change', render);
     render();
