@@ -40,7 +40,7 @@
       <span class="badge" id="multipleTablesState">{% if last_game and last_game['multiple_tables'] %}ON{% else %}OFF{% endif %}</span>
     </label>
   </div>
-  <div id="coOrganizerCreateField" style="{% if not (last_game and last_game['multiple_tables']) %}display:none;{% endif %}">
+  <div id="coOrganizerCreateField">
     <label>Co-organizers (optional)</label>
     <input type="text" name="co_organizers" placeholder="email@site.com, another_user">
   </div>
@@ -73,8 +73,6 @@
 <link rel="stylesheet" href="/static/flatpickr.min.css">
 <script src="/static/flatpickr.min.js"></script>
 <script>
-  flatpickr('.date-picker', { dateFormat: 'Y-m-d', disableMobile: true });
-  flatpickr('.time-picker', { enableTime: true, noCalendar: true, dateFormat: 'H:i', altInput: true, altFormat: 'h:i K', disableMobile: true });
   (function() {
     const toggle = document.getElementById('multipleTablesToggle');
     const state = document.getElementById('multipleTablesState');
@@ -87,5 +85,9 @@
     toggle.addEventListener('change', render);
     render();
   })();
+  if (window.flatpickr) {
+    flatpickr('.date-picker', { dateFormat: 'Y-m-d', disableMobile: true });
+    flatpickr('.time-picker', { enableTime: true, noCalendar: true, dateFormat: 'H:i', altInput: true, altFormat: 'h:i K', disableMobile: true });
+  }
 </script>
 {% endblock %}
