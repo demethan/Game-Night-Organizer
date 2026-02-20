@@ -264,6 +264,22 @@ def init_db():
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_games_host_code ON games(host_code)")
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS game_co_organizers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            invited_by INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (game_id) REFERENCES games(id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (invited_by) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_game_co_org_unique ON game_co_organizers(game_id, user_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_game_co_org_user ON game_co_organizers(user_id)")
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS rsvps (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             game_id INTEGER NOT NULL,
@@ -434,6 +450,30 @@ def require_admin(request: Request) -> bool:
     return current_user_is_admin(request)
 
 
+def game_is_owner(game_row, user_id: Optional[int]) -> bool:
+    return bool(game_row and user_id and int(game_row["organizer_id"]) == int(user_id))
+
+
+def user_is_game_co_organizer(conn: sqlite3.Connection, game_id: int, user_id: Optional[int]) -> bool:
+    if not user_id:
+        return False
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM game_co_organizers WHERE game_id = ? AND user_id = ?", (game_id, int(user_id)))
+    return cur.fetchone() is not None
+
+
+def get_game_for_manager(conn: sqlite3.Connection, game_id: int, user_id: Optional[int]):
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM games WHERE id = ?", (game_id,))
+    game = cur.fetchone()
+    if not game:
+        return None, False
+    is_owner = game_is_owner(game, user_id)
+    if is_owner or user_is_game_co_organizer(conn, game_id, user_id):
+        return game, is_owner
+    return None, False
+
+
 # ------------------------
 # Utility
 # ------------------------
@@ -539,23 +579,56 @@ def seat_threshold_reached(conn: sqlite3.Connection, game_id: int, total_players
 
 
 def assign_seats_if_ready(conn: sqlite3.Connection, game_id: int, total_players: int) -> None:
-    if not seat_threshold_reached(conn, game_id, total_players):
-        return
+    reflow_game_seats(conn, game_id, total_players)
+
+
+def reflow_game_seats(conn: sqlite3.Connection, game_id: int, total_players: int) -> None:
     cur = conn.cursor()
+    if not seat_threshold_reached(conn, game_id, total_players):
+        cur.execute("UPDATE rsvps SET seat_number = NULL WHERE game_id = ?", (game_id,))
+        return
+
     cur.execute(
-        "SELECT id FROM rsvps WHERE game_id = ? AND status IN ('IN','LATE','HOST') AND seat_number IS NULL ORDER BY datetime(created_at) ASC, id ASC",
+        """
+        SELECT id, seat_number, created_at
+        FROM rsvps
+        WHERE game_id = ? AND status IN ('IN', 'LATE', 'HOST')
+        ORDER BY datetime(created_at) ASC, id ASC
+        """,
         (game_id,),
     )
-    rows = cur.fetchall()
-    if not rows:
+    active_rows = cur.fetchall()
+    if not active_rows:
+        cur.execute("UPDATE rsvps SET seat_number = NULL WHERE game_id = ?", (game_id,))
         return
-    seats = available_seats(conn, game_id, total_players)
-    for row in rows:
-        if not seats:
-            break
-        seat = secrets.choice(seats)
-        seats.remove(seat)
-        cur.execute("UPDATE rsvps SET seat_number = ? WHERE id = ?", (seat, row["id"]))
+
+    # Keep first-time seat assignment random; compact/shift minimally on later updates.
+    has_existing_seats = any(row["seat_number"] is not None for row in active_rows)
+    if not has_existing_seats:
+        active_ids = [int(row["id"]) for row in active_rows]
+        seats = list(range(1, len(active_ids) + 1))
+        for rsvp_id in active_ids:
+            seat = secrets.choice(seats)
+            seats.remove(seat)
+            cur.execute("UPDATE rsvps SET seat_number = ? WHERE id = ?", (seat, rsvp_id))
+    else:
+        ordered_rows = sorted(
+            active_rows,
+            key=lambda row: (
+                1 if row["seat_number"] is None else 0,
+                row["seat_number"] if row["seat_number"] is not None else 10**9,
+                row["created_at"] or "",
+                int(row["id"]),
+            ),
+        )
+        next_seat = 1
+        for row in ordered_rows:
+            cur.execute("UPDATE rsvps SET seat_number = ? WHERE id = ?", (next_seat, int(row["id"])))
+            next_seat += 1
+    cur.execute(
+        "UPDATE rsvps SET seat_number = NULL WHERE game_id = ? AND status NOT IN ('IN', 'LATE', 'HOST')",
+        (game_id,),
+    )
 
 
 def available_seats(conn: sqlite3.Connection, game_id: int, total_players: int) -> list:
@@ -580,22 +653,7 @@ def backfill_seats(conn: sqlite3.Connection) -> None:
     cur.execute("SELECT id, total_players FROM games")
     games = cur.fetchall()
     for game in games:
-        if not seat_threshold_reached(conn, game["id"], game["total_players"]):
-            continue
-        cur.execute(
-            "SELECT id FROM rsvps WHERE game_id = ? AND status IN ('IN','LATE','HOST') AND seat_number IS NULL ORDER BY datetime(created_at) ASC, id ASC",
-            (game["id"],),
-        )
-        rows = cur.fetchall()
-        if not rows:
-            continue
-        seats = available_seats(conn, game["id"], game["total_players"])
-        for row in rows:
-            if not seats:
-                break
-            seat = secrets.choice(seats)
-            seats.remove(seat)
-            cur.execute("UPDATE rsvps SET seat_number = ? WHERE id = ?", (seat, row["id"]))
+        reflow_game_seats(conn, game["id"], game["total_players"])
     conn.commit()
 
 
@@ -1154,6 +1212,34 @@ def maybe_send_standby_confirmation_sms(conn: sqlite3.Connection, game_row, phon
     send_twilio_sms_guarded(conn, int(game_row["id"]), phone_10, body, "standby_confirm")
 
 
+def maybe_notify_organizer_when_out(
+    conn: sqlite3.Connection,
+    game_row,
+    previous_status: Optional[str],
+    new_status: str,
+    player_name: str,
+) -> None:
+    if previous_status not in {"IN", "LATE", "HOST"} or new_status != "OUT":
+        return
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT phone
+        FROM rsvps
+        WHERE game_id = ? AND status = 'HOST' AND phone IS NOT NULL AND phone <> ''
+        ORDER BY datetime(created_at) ASC, id ASC
+        LIMIT 1
+        """,
+        (int(game_row["id"]),),
+    )
+    host_row = cur.fetchone()
+    if not host_row:
+        return
+    name = (player_name or "A player").strip()
+    body = f"{game_row['title']}: {name} changed RSVP to OUT."
+    send_twilio_sms_guarded(conn, int(game_row["id"]), host_row["phone"], body, "organizer_out_alert")
+
+
 def notify_game_cancelled_sms(conn: sqlite3.Connection, game_row) -> None:
     cur = conn.cursor()
     recipients = set()
@@ -1268,6 +1354,7 @@ def cleanup_old_games(conn: sqlite3.Connection, organizer_id: int) -> None:
     old_ids = [row["id"] for row in cur.fetchall()]
     if not old_ids:
         return
+    cur.execute("DELETE FROM game_co_organizers WHERE game_id IN (%s)" % ",".join("?" * len(old_ids)), old_ids)
     cur.execute("DELETE FROM rsvps WHERE game_id IN (%s)" % ",".join("?" * len(old_ids)), old_ids)
     cur.execute("DELETE FROM standby WHERE game_id IN (%s)" % ",".join("?" * len(old_ids)), old_ids)
     cur.execute("DELETE FROM games WHERE id IN (%s)" % ",".join("?" * len(old_ids)), old_ids)
@@ -1325,9 +1412,9 @@ def host_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
         """
         SELECT id, name, status, late_eta, seat_number, created_at
         FROM rsvps
-        WHERE game_id = ? AND status IN ('IN', 'LATE')
+        WHERE game_id = ? AND status IN ('HOST', 'IN', 'LATE')
         ORDER BY
-            CASE status WHEN 'IN' THEN 0 WHEN 'LATE' THEN 1 ELSE 9 END,
+            CASE status WHEN 'HOST' THEN 0 WHEN 'IN' THEN 1 WHEN 'LATE' THEN 2 ELSE 9 END,
             datetime(created_at) ASC, id ASC
         """,
         (game_id,),
@@ -1722,7 +1809,18 @@ def dashboard(request: Request):
     cur = conn.cursor()
     cur.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     user = cur.fetchone()
-    cur.execute("SELECT * FROM games WHERE organizer_id = ? ORDER BY created_at DESC", (user_id,))
+    cur.execute(
+        """
+        SELECT g.*,
+               CASE WHEN g.organizer_id = ? THEN 1 ELSE 0 END AS is_owner
+        FROM games g
+        LEFT JOIN game_co_organizers c
+               ON c.game_id = g.id AND c.user_id = ?
+        WHERE g.organizer_id = ? OR c.user_id IS NOT NULL
+        ORDER BY datetime(g.created_at) DESC
+        """,
+        (user_id, user_id, user_id),
+    )
     games = cur.fetchall()
     conn.close()
 
@@ -1934,9 +2032,11 @@ def admin_delete_user(request: Request, user_id: int, csrf_token: str = Form(...
     cur.execute("SELECT id FROM games WHERE organizer_id = ?", (user_id,))
     game_ids = [row["id"] for row in cur.fetchall()]
     if game_ids:
+        cur.execute("DELETE FROM game_co_organizers WHERE game_id IN (%s)" % ",".join("?" * len(game_ids)), game_ids)
         cur.execute("DELETE FROM rsvps WHERE game_id IN (%s)" % ",".join("?" * len(game_ids)), game_ids)
         cur.execute("DELETE FROM standby WHERE game_id IN (%s)" % ",".join("?" * len(game_ids)), game_ids)
         cur.execute("DELETE FROM games WHERE id IN (%s)" % ",".join("?" * len(game_ids)), game_ids)
+    cur.execute("DELETE FROM game_co_organizers WHERE user_id = ?", (user_id,))
     cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     conn.close()
@@ -2111,12 +2211,11 @@ def view_game(request: Request, game_id: int):
         return RedirectResponse(url="/login", status_code=302)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, is_owner = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return RedirectResponse(url="/dashboard", status_code=302)
+    cur = conn.cursor()
 
     cur.execute("SELECT * FROM rsvps WHERE game_id = ? ORDER BY created_at ASC", (game_id,))
     rsvp_rows = cur.fetchall()
@@ -2128,6 +2227,17 @@ def view_game(request: Request, game_id: int):
 
     cur.execute("SELECT * FROM standby WHERE game_id = ? ORDER BY created_at ASC", (game_id,))
     standby = cur.fetchall()
+    cur.execute(
+        """
+        SELECT u.id, u.name, u.email, u.username
+        FROM game_co_organizers c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.game_id = ?
+        ORDER BY datetime(c.created_at) ASC, c.id ASC
+        """,
+        (game_id,),
+    )
+    co_organizers = cur.fetchall()
 
     in_count = count_in(conn, game_id)
     conn.close()
@@ -2140,6 +2250,8 @@ def view_game(request: Request, game_id: int):
             "rsvps": rsvps,
             "standby": standby,
             "in_count": in_count,
+            "is_owner": is_owner,
+            "co_organizers": co_organizers,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
@@ -2153,9 +2265,7 @@ def game_snapshot(request: Request, game_id: int):
         return PlainTextResponse("Unauthorized", status_code=401)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return PlainTextResponse("Not found", status_code=404)
@@ -2171,9 +2281,7 @@ async def game_events(request: Request, game_id: int):
         return PlainTextResponse("Unauthorized", status_code=401)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
     conn.close()
     if not game:
         return PlainTextResponse("Not found", status_code=404)
@@ -2185,9 +2293,7 @@ async def game_events(request: Request, game_id: int):
                 break
             loop_conn = get_db()
             try:
-                loop_cur = loop_conn.cursor()
-                loop_cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-                game_row = loop_cur.fetchone()
+                game_row, _ = get_game_for_manager(loop_conn, game_id, user_id)
                 if not game_row:
                     break
                 payload = game_snapshot_payload(loop_conn, game_row)
@@ -2223,11 +2329,10 @@ def organizer_send_text(request: Request, game_id: int, rsvp_id: int, csrf_token
 
     conn = get_db()
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-        game = cur.fetchone()
+        game, _ = get_game_for_manager(conn, game_id, user_id)
         if not game:
             return JSONResponse({"ok": False, "error": "Game not found"}, status_code=404)
+        cur = conn.cursor()
 
         cur.execute("SELECT * FROM rsvps WHERE id = ? AND game_id = ?", (rsvp_id, game_id))
         rsvp = cur.fetchone()
@@ -2262,13 +2367,16 @@ def delete_game(request: Request, game_id: int, csrf_token: str = Form(...)):
         return PlainTextResponse("Bad CSRF token", status_code=400)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, is_owner = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return RedirectResponse(url="/dashboard", status_code=302)
+    if not is_owner:
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Only%20the%20owner%20can%20delete%20this%20game", status_code=302)
 
+    cur = conn.cursor()
+    cur.execute("DELETE FROM game_co_organizers WHERE game_id = ?", (game_id,))
     cur.execute("DELETE FROM rsvps WHERE game_id = ?", (game_id,))
     cur.execute("DELETE FROM standby WHERE game_id = ?", (game_id,))
     cur.execute("DELETE FROM games WHERE id = ?", (game_id,))
@@ -2287,13 +2395,15 @@ def cancel_game(request: Request, game_id: int, csrf_token: str = Form(...)):
         return PlainTextResponse("Bad CSRF token", status_code=400)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, is_owner = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return RedirectResponse(url="/dashboard", status_code=302)
+    if not is_owner:
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Only%20the%20owner%20can%20cancel%20or%20reopen%20this%20game", status_code=302)
 
+    cur = conn.cursor()
     is_cancelled = int(game["is_cancelled"] or 0) == 1
     if not is_cancelled:
         last_sent = game["cancellation_sms_sent_at"]
@@ -2349,12 +2459,11 @@ def toggle_game_sms(request: Request, game_id: int, csrf_token: str = Form(...))
         return PlainTextResponse("Bad CSRF token", status_code=400)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT sms_enabled FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return RedirectResponse(url="/dashboard", status_code=302)
+    cur = conn.cursor()
     next_value = 0 if int(game["sms_enabled"] or 1) == 1 else 1
     cur.execute("UPDATE games SET sms_enabled = ? WHERE id = ?", (next_value, game_id))
     conn.commit()
@@ -2387,12 +2496,11 @@ def update_game_details(
         return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20date,%20time,%20or%20address", status_code=302)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return RedirectResponse(url="/dashboard", status_code=302)
+    cur = conn.cursor()
 
     cur.execute(
         "UPDATE games SET location = ?, game_date = ?, game_time = ?, multiple_tables = ? WHERE id = ?",
@@ -2436,12 +2544,11 @@ def update_rsvp(
         return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20name", status_code=302)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return RedirectResponse(url="/dashboard", status_code=302)
+    cur = conn.cursor()
 
     cur.execute("SELECT * FROM rsvps WHERE id = ? AND game_id = ?", (rsvp_id, game_id))
     rsvp = cur.fetchone()
@@ -2458,6 +2565,7 @@ def update_rsvp(
         conn.close()
         return RedirectResponse(url=f"/games/{game_id}?error=Name%20already%20exists", status_code=302)
 
+    previous_status = (rsvp["status"] or "").upper()
     new_seat = rsvp["seat_number"]
     if status == "OUT":
         new_seat = None
@@ -2471,6 +2579,7 @@ def update_rsvp(
         (cleaned_name, cleaned_phone, status, (late_eta or "").strip() or None, new_seat, rsvp_id),
     )
     assign_seats_if_ready(conn, game_id, game["total_players"])
+    maybe_notify_organizer_when_out(conn, game, previous_status, status, cleaned_name)
     notify_seat_sms_when_full(conn, game)
     conn.commit()
     conn.close()
@@ -2502,12 +2611,11 @@ def add_rsvp(
         return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20name", status_code=302)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return RedirectResponse(url="/dashboard", status_code=302)
+    cur = conn.cursor()
 
     cur.execute(
         "SELECT id FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?)",
@@ -2556,12 +2664,11 @@ def promote_standby(
         return PlainTextResponse("Bad CSRF token", status_code=400)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
-    game = cur.fetchone()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
     if not game:
         conn.close()
         return RedirectResponse(url="/dashboard", status_code=302)
+    cur = conn.cursor()
 
     cur.execute("SELECT * FROM standby WHERE id = ? AND game_id = ?", (standby_id, game_id))
     standby_row = cur.fetchone()
@@ -2603,6 +2710,65 @@ def promote_standby(
     conn.commit()
     conn.close()
     return RedirectResponse(url=f"/games/{game_id}?success=Moved%20to%20IN", status_code=302)
+
+
+@app.post("/games/{game_id}/co-organizers/add")
+def add_co_organizer(
+    request: Request,
+    game_id: int,
+    identifier: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+
+    conn = get_db()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
+    if not game:
+        conn.close()
+        return RedirectResponse(url="/dashboard", status_code=302)
+    if not game_uses_multiple_tables(game):
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Co-organizers%20can%20only%20be%20added%20in%20Multiple%20Table%20Mode", status_code=302)
+
+    lookup = (identifier or "").strip()
+    if not lookup:
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Enter%20an%20email%20or%20username", status_code=302)
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, email, username, name, is_disabled
+        FROM users
+        WHERE LOWER(email) = LOWER(?) OR LOWER(COALESCE(username, '')) = LOWER(?)
+        LIMIT 1
+        """,
+        (lookup, lookup),
+    )
+    target = cur.fetchone()
+    if not target or int(target["is_disabled"] or 0) == 1:
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Organizer%20account%20not%20found", status_code=302)
+    if int(target["id"]) == int(game["organizer_id"]):
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=That%20account%20already%20owns%20this%20game", status_code=302)
+
+    cur.execute("SELECT 1 FROM game_co_organizers WHERE game_id = ? AND user_id = ?", (game_id, int(target["id"])))
+    if cur.fetchone():
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=That%20co-organizer%20is%20already%20added", status_code=302)
+
+    cur.execute(
+        "INSERT INTO game_co_organizers (game_id, user_id, invited_by, created_at) VALUES (?, ?, ?, ?)",
+        (game_id, int(target["id"]), int(user_id), datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url=f"/games/{game_id}?success=Co-organizer%20added", status_code=302)
 
 
 @app.get("/game", response_class=HTMLResponse)
@@ -2647,8 +2813,11 @@ def game_by_code(request: Request, code: str):
             status_code=404,
         )
 
-    # If organizer opens invite link while logged in, send to organizer view
-    if user_id and game["organizer_id"] == user_id:
+    # If game manager opens invite link while logged in, send to organizer view
+    can_manage = False
+    if user_id:
+        can_manage = game_is_owner(game, user_id) or user_is_game_co_organizer(conn, int(game["id"]), user_id)
+    if can_manage:
         conn.close()
         return RedirectResponse(url=f"/games/{game['id']}", status_code=302)
 
@@ -2703,7 +2872,7 @@ def host_view(request: Request, host_code: str):
         conn.close()
         return templates.TemplateResponse(
             "game_not_found.html",
-            {"request": request, "message": "Host link not found."},
+            {"request": request, "message": "Roster link not found."},
             status_code=404,
         )
     if is_game_cancelled(game):
@@ -2824,19 +2993,21 @@ def rsvp_game(
     existing = None
     if cleaned_token:
         cur.execute(
-            "SELECT id, seat_number FROM rsvps WHERE game_id = ? AND rsvp_token = ?",
+            "SELECT id, status, seat_number FROM rsvps WHERE game_id = ? AND rsvp_token = ?",
             (game["id"], cleaned_token),
         )
         existing = cur.fetchone()
     if not existing:
         cur.execute(
-            "SELECT id, seat_number FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?)",
+            "SELECT id, status, seat_number FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?)",
             (game["id"], cleaned_name),
         )
         existing = cur.fetchone()
 
     rsvp_id = None
+    previous_status = None
     if existing:
+        previous_status = (existing["status"] or "").upper()
         cur.execute(
             "SELECT id FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?) AND id != ?",
             (game["id"], cleaned_name, existing["id"]),
@@ -2874,6 +3045,7 @@ def rsvp_game(
     table_label, seat_in_table = seat_assignment(seat_to_show, game["total_players"], game_uses_multiple_tables(game))
     seat_label = seat_display(seat_to_show, game["total_players"], game_uses_multiple_tables(game))
     maybe_send_choice_confirmation_sms(conn, game, cleaned_phone, status, cleaned_eta, seat_label)
+    maybe_notify_organizer_when_out(conn, game, previous_status, status, cleaned_name)
     notify_seat_sms_when_full(conn, game)
     conn.commit()
     conn.close()

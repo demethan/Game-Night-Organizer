@@ -16,6 +16,7 @@
     <div class="row">
       <span class="badge">Total Players: {{ game['total_players'] }}</span>
       <span class="badge">Code: {{ game['code'] }}</span>
+      {% if not game['is_owner'] %}<span class="badge">Shared</span>{% endif %}
       {% if game['is_cancelled'] %}<span class="badge">Cancelled</span>{% endif %}
     </div>
     <div class="row" style="margin-top: 12px;">
@@ -29,13 +30,15 @@
         data-time="{{ game['game_time'] | fmt_game_time }}"
         data-location="{{ game['location'] }}"
       >Copy Invite Link</button>
-      <button class="btn secondary copy-host-btn" type="button" data-link="https://{{ request.headers.get('host') }}/h/{{ game['host_code'] }}">Copy Host Link</button>
+      <button class="btn secondary copy-host-btn" type="button" data-link="https://{{ request.headers.get('host') }}/h/{{ game['host_code'] }}">Copy Roster Link</button>
       <span class="badge">Invite Link: /game?g={{ game['code'] }}</span>
-      <span class="badge">Host Link: /h/{{ game['host_code'] }}</span>
+      <span class="badge">Roster Link: /h/{{ game['host_code'] }}</span>
+      {% if game['is_owner'] %}
       <form method="post" action="/games/{{ game['id'] }}/delete" onsubmit="return confirm('Delete this game and all RSVPs?');" style="margin-left:auto;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
         <button class="btn danger" type="submit">Delete Game</button>
       </form>
+      {% endif %}
     </div>
   </div>
   {% endfor %}
@@ -64,9 +67,9 @@
         try {
           await navigator.clipboard.writeText(link);
           btn.textContent = 'Copied!';
-          setTimeout(() => { btn.textContent = 'Copy Host Link'; }, 1500);
+          setTimeout(() => { btn.textContent = 'Copy Roster Link'; }, 1500);
         } catch (e) {
-          prompt('Copy this host link:', link);
+          prompt('Copy this roster link:', link);
         }
       });
     });
