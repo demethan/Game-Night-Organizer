@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -52,6 +53,8 @@ SMS_PER_ORGANIZER_DAY_LIMIT = 700
 CANCELLATION_SMS_COOLDOWN_HOURS = 6
 TRUSTED_DEVICE_DAYS = 30
 TRUSTED_DEVICE_COOKIE = "poker_trusted_device"
+CO_ORG_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$")
+CO_ORG_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # Python 3.8 environment: implement America/Thunder_Bay (EST/EDT) without zoneinfo.
 def _thunder_bay_dst_bounds(year: int):
@@ -666,6 +669,24 @@ def clean_text(value: str, max_len: int) -> str:
     if not cleaned or len(cleaned) > max_len:
         raise ValueError("Invalid input")
     return cleaned
+
+
+def parse_co_organizer_identifier(value: str) -> tuple[str, str]:
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("Enter an email or username.")
+    if len(raw) > 254:
+        raise ValueError("Email or username is too long.")
+    if any(ch.isspace() for ch in raw):
+        raise ValueError("Email or username cannot contain spaces.")
+    if "@" in raw:
+        lowered = raw.lower()
+        if not CO_ORG_EMAIL_RE.match(lowered):
+            raise ValueError("Enter a valid email address.")
+        return "email", lowered
+    if not CO_ORG_USERNAME_RE.match(raw):
+        raise ValueError("Enter a valid username (2-32 chars, letters/numbers/._-).")
+    return "username", raw.lower()
 
 
 def normalize_game_time(value: str) -> str:
@@ -2734,25 +2755,40 @@ def add_co_organizer(
         conn.close()
         return RedirectResponse(url=f"/games/{game_id}?error=Co-organizers%20can%20only%20be%20added%20in%20Multiple%20Table%20Mode", status_code=302)
 
-    lookup = (identifier or "").strip()
-    if not lookup:
+    try:
+        lookup_kind, lookup_value = parse_co_organizer_identifier(identifier)
+    except ValueError as e:
         conn.close()
-        return RedirectResponse(url=f"/games/{game_id}?error=Enter%20an%20email%20or%20username", status_code=302)
+        return RedirectResponse(url=f"/games/{game_id}?error={urllib.parse.quote(str(e))}", status_code=302)
 
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, email, username, name, is_disabled
-        FROM users
-        WHERE LOWER(email) = LOWER(?) OR LOWER(COALESCE(username, '')) = LOWER(?)
-        LIMIT 1
-        """,
-        (lookup, lookup),
-    )
+    if lookup_kind == "email":
+        cur.execute(
+            """
+            SELECT id, email, username, name, is_disabled
+            FROM users
+            WHERE LOWER(email) = ?
+            LIMIT 1
+            """,
+            (lookup_value,),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, email, username, name, is_disabled
+            FROM users
+            WHERE LOWER(COALESCE(username, '')) = ?
+            LIMIT 1
+            """,
+            (lookup_value,),
+        )
     target = cur.fetchone()
     if not target or int(target["is_disabled"] or 0) == 1:
         conn.close()
         return RedirectResponse(url=f"/games/{game_id}?error=Organizer%20account%20not%20found", status_code=302)
+    if int(target["id"]) == int(user_id):
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=You%20already%20have%20access%20to%20this%20game", status_code=302)
     if int(target["id"]) == int(game["organizer_id"]):
         conn.close()
         return RedirectResponse(url=f"/games/{game_id}?error=That%20account%20already%20owns%20this%20game", status_code=302)
