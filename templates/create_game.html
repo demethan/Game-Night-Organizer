@@ -35,9 +35,11 @@
   </div>
   <div>
     <label style="display:flex; align-items:center; gap:8px; margin-top:26px;">
-      <input type="checkbox" name="multiple_tables" value="1" {% if last_game and last_game['multiple_tables'] %}checked{% endif %} style="width:auto;">
+      <input type="checkbox" id="multipleTablesToggle" name="multiple_tables" value="1" {% if last_game and last_game['multiple_tables'] %}checked{% endif %} style="width:auto;">
       Multiple Table Mode
+      <span class="badge" id="multipleTablesState">{% if last_game and last_game['multiple_tables'] %}ON{% else %}OFF{% endif %}</span>
     </label>
+    <p id="multipleTablesHint" style="margin-top:6px;">{% if last_game and last_game['multiple_tables'] %}Co-organizer features will be enabled for this game.{% else %}Turn this on to enable co-organizer features for this game.{% endif %}</p>
   </div>
   <div>
     <button class="btn" type="submit">Create Game</button>
@@ -70,5 +72,22 @@
 <script>
   flatpickr('.date-picker', { dateFormat: 'Y-m-d', disableMobile: true });
   flatpickr('.time-picker', { enableTime: true, noCalendar: true, dateFormat: 'H:i', altInput: true, altFormat: 'h:i K', disableMobile: true });
+  (function() {
+    const toggle = document.getElementById('multipleTablesToggle');
+    const state = document.getElementById('multipleTablesState');
+    const hint = document.getElementById('multipleTablesHint');
+    if (!toggle || !state || !hint) return;
+    function render() {
+      if (toggle.checked) {
+        state.textContent = 'ON';
+        hint.textContent = 'Co-organizer features will be enabled for this game.';
+      } else {
+        state.textContent = 'OFF';
+        hint.textContent = 'Turn this on to enable co-organizer features for this game.';
+      }
+    }
+    toggle.addEventListener('change', render);
+    render();
+  })();
 </script>
 {% endblock %}
