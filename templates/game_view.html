@@ -293,6 +293,7 @@
 
     const order = { IN: 0, HOST: 1, LATE: 2, OUT: 3 };
     const csrfToken = {{ csrf_token(request) | tojson }};
+    const initialMultipleTables = {{ 1 if game['multiple_tables'] else 0 }};
     let currentFilter = null;
     let currentSort = 'status';
 
@@ -365,6 +366,10 @@
         if (response.ok && !redirectedToError) {
           lastDetailsSaved = signature;
           updateDetailsMeta();
+          if (String(payload.multiple_tables) !== String(initialMultipleTables)) {
+            window.location.href = `/games/${gameId}?success=Game%20details%20updated`;
+            return;
+          }
           showDetailsStatus('Saved');
           setTimeout(() => {
             if (detailsStatus && detailsStatus.textContent === 'Saved') hideDetailsStatus();
