@@ -55,6 +55,44 @@
     </button>
     <span class="badge">MFA: {% if user['mfa_enabled'] %}ON{% else %}OFF{% endif %}</span>
   </form>
+
+  <hr style="margin:16px 0; border:0; border-top:1px solid #e5e7eb;">
+
+  <h4 style="margin:0 0 8px;">Authenticator App (Google Authenticator / Authy)</h4>
+  {% if user['totp_enabled'] %}
+    <p><span class="badge">Authenticator: ON</span></p>
+    <form method="post" style="margin-top:8px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="action" value="disable_totp">
+      <button class="btn secondary" type="submit">Disable Authenticator</button>
+    </form>
+  {% else %}
+    <form method="post" style="margin-top:8px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="action" value="start_totp_enroll">
+      <button class="btn secondary" type="submit">Set Up Authenticator</button>
+    </form>
+  {% endif %}
+
+  {% if totp_qr_svg and not user['totp_enabled'] %}
+    <div class="card" style="margin-top:12px; background:#f9fafb;">
+      <p style="margin-top:0;"><strong>Step 1:</strong> Scan this QR code in your authenticator app.</p>
+      <div style="max-width:220px;">{{ totp_qr_svg | safe }}</div>
+      <p><strong>Manual key:</strong> <code>{{ totp_secret_preview }}</code></p>
+      <p><strong>Step 2:</strong> Enter the 6-digit app code to finish setup.</p>
+      <form method="post" class="grid grid-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <input type="hidden" name="action" value="confirm_totp_enroll">
+        <div>
+          <label>Authenticator Code</label>
+          <input type="text" name="verification_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" required>
+        </div>
+        <div>
+          <button class="btn" type="submit">Enable Authenticator MFA</button>
+        </div>
+      </form>
+    </div>
+  {% endif %}
 </div>
 
 <div class="card">

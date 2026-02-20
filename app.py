@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
+import hmac
 import hashlib
+import io
 import json
 import os
 import re
 import secrets
 import sqlite3
+import struct
 import time
 import urllib.error
 import urllib.parse
@@ -22,6 +26,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
+import qrcode
+from qrcode.image.svg import SvgPathImage
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -55,6 +61,7 @@ TRUSTED_DEVICE_DAYS = 30
 TRUSTED_DEVICE_COOKIE = "poker_trusted_device"
 CO_ORG_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$")
 CO_ORG_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+TOTP_ISSUER = "Poker Game Organizer"
 
 # Python 3.8 environment: implement America/Thunder_Bay (EST/EDT) without zoneinfo.
 def _thunder_bay_dst_bounds(year: int):
@@ -230,6 +237,10 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN phone_verified_at TEXT")
     if "mfa_enabled" not in existing_cols:
         cur.execute("ALTER TABLE users ADD COLUMN mfa_enabled INTEGER DEFAULT 0")
+    if "totp_secret" not in existing_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
+    if "totp_enabled" not in existing_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
     cur.execute(
         """
@@ -987,6 +998,8 @@ def complete_login_session(request: Request, user_row) -> None:
     request.session["user_name"] = user_row["name"]
     request.session.pop("pending_mfa_user_id", None)
     request.session.pop("pending_mfa_name", None)
+    request.session.pop("pending_mfa_method", None)
+    request.session.pop("pending_totp_secret", None)
 
 
 def trusted_device_ua_hash(request: Request) -> str:
@@ -1112,6 +1125,69 @@ def send_user_mfa_sms(conn: sqlite3.Connection, user_row, code: str) -> tuple[bo
     phone = user_row["phone"] or ""
     body = f"Organizer login code: {code}. Expires in 10 minutes."
     return send_twilio_sms_guarded(conn, None, phone, body, "user_mfa")
+
+
+def _totp_normalize_secret(secret: str) -> Optional[bytes]:
+    cleaned = (secret or "").replace(" ", "").strip().upper()
+    if not cleaned:
+        return None
+    pad_len = (8 - (len(cleaned) % 8)) % 8
+    cleaned += "=" * pad_len
+    try:
+        return base64.b32decode(cleaned, casefold=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def generate_totp_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def build_totp_uri(user_row, secret: str) -> str:
+    label = f"{TOTP_ISSUER}:{user_row['email']}"
+    return (
+        f"otpauth://totp/{urllib.parse.quote(label)}"
+        f"?secret={urllib.parse.quote(secret)}"
+        f"&issuer={urllib.parse.quote(TOTP_ISSUER)}"
+        "&algorithm=SHA1&digits=6&period=30"
+    )
+
+
+def build_totp_qr_svg(otpauth_uri: str) -> str:
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=3,
+    )
+    qr.add_data(otpauth_uri)
+    qr.make(fit=True)
+    img = qr.make_image(image_factory=SvgPathImage)
+    buf = io.BytesIO()
+    img.save(buf)
+    return buf.getvalue().decode("utf-8")
+
+
+def _totp_code(secret: str, counter: int) -> Optional[str]:
+    key = _totp_normalize_secret(secret)
+    if not key:
+        return None
+    msg = struct.pack(">Q", int(counter))
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    binary = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(binary % 1_000_000).zfill(6)
+
+
+def verify_totp_code(secret: str, code: str, window: int = 1) -> bool:
+    candidate = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(candidate) != 6:
+        return False
+    current_counter = int(time.time() // 30)
+    for offset in range(-window, window + 1):
+        if _totp_code(secret, current_counter + offset) == candidate:
+            return True
+    return False
 
 
 def send_user_phone_verify_sms(conn: sqlite3.Connection, phone_10: str, code: str) -> tuple[bool, str]:
@@ -1679,7 +1755,11 @@ def login(
     cur = conn.cursor()
     identifier = email.strip()
     cur.execute(
-        "SELECT id, password_hash, is_admin, is_disabled, name, phone, phone_verified_at, mfa_enabled FROM users WHERE email = ? OR username = ?",
+        """
+        SELECT id, password_hash, is_admin, is_disabled, name, phone, phone_verified_at, mfa_enabled, totp_secret, totp_enabled
+        FROM users
+        WHERE email = ? OR username = ?
+        """,
         (identifier.lower(), identifier),
     )
     row = cur.fetchone()
@@ -1698,11 +1778,12 @@ def login(
             status_code=403,
         )
     if int(row["mfa_enabled"] or 0) == 1:
-        if not user_phone_is_verified(row):
+        has_totp = int(row["totp_enabled"] or 0) == 1 and bool((row["totp_secret"] or "").strip())
+        if not has_totp and not user_phone_is_verified(row):
             conn.close()
             return templates.TemplateResponse(
                 "login.html",
-                {"request": request, "error": "MFA is enabled but phone is not verified. Use profile settings after admin reset if needed."},
+                {"request": request, "error": "MFA is enabled but no authenticator app or verified phone is configured."},
                 status_code=403,
             )
         if has_valid_trusted_device(conn, request, int(row["id"])):
@@ -1710,12 +1791,18 @@ def login(
             conn.close()
             complete_login_session(request, row)
             return RedirectResponse(url="/dashboard", status_code=302)
+        request.session["pending_mfa_user_id"] = int(row["id"])
+        request.session["pending_mfa_name"] = row["name"]
+        if has_totp:
+            conn.commit()
+            conn.close()
+            request.session["pending_mfa_method"] = "totp"
+            return RedirectResponse(url="/mfa", status_code=302)
         pending_user_id = request.session.get("pending_mfa_user_id")
         if pending_user_id and int(pending_user_id) == int(row["id"]) and has_active_user_mfa_code(conn, int(row["id"])):
             conn.commit()
             conn.close()
-            request.session["pending_mfa_user_id"] = int(row["id"])
-            request.session["pending_mfa_name"] = row["name"]
+            request.session["pending_mfa_method"] = "sms"
             return RedirectResponse(url="/mfa", status_code=302)
         code = create_user_mfa_code(conn, int(row["id"]))
         sent, reason = send_user_mfa_sms(conn, row, code)
@@ -1727,8 +1814,7 @@ def login(
                 {"request": request, "error": f"Could not send MFA code: {reason}"},
                 status_code=503,
             )
-        request.session["pending_mfa_user_id"] = int(row["id"])
-        request.session["pending_mfa_name"] = row["name"]
+        request.session["pending_mfa_method"] = "sms"
         return RedirectResponse(url="/mfa", status_code=302)
     conn.close()
     complete_login_session(request, row)
@@ -1742,11 +1828,14 @@ def mfa_form(request: Request):
     pending_user_id = request.session.get("pending_mfa_user_id")
     if not pending_user_id:
         return RedirectResponse(url="/login", status_code=302)
+    method = request.session.get("pending_mfa_method") or "sms"
     return templates.TemplateResponse(
         "mfa.html",
         {
             "request": request,
             "error": None,
+            "success": None,
+            "mfa_method": method,
             "pending_name": request.session.get("pending_mfa_name") or "Organizer",
         },
     )
@@ -1761,7 +1850,16 @@ def mfa_verify(request: Request, code: str = Form(...), trust_device: str = Form
         return RedirectResponse(url="/login", status_code=302)
     conn = get_db()
     cur = conn.cursor()
-    if not verify_user_mfa_code(conn, int(pending_user_id), code):
+    method = request.session.get("pending_mfa_method") or "sms"
+    verified = False
+    if method == "totp":
+        cur.execute("SELECT id, is_admin, name, totp_secret, totp_enabled FROM users WHERE id = ?", (int(pending_user_id),))
+        maybe_user = cur.fetchone()
+        if maybe_user and int(maybe_user["totp_enabled"] or 0) == 1 and maybe_user["totp_secret"]:
+            verified = verify_totp_code(maybe_user["totp_secret"], code)
+    else:
+        verified = verify_user_mfa_code(conn, int(pending_user_id), code)
+    if not verified:
         conn.commit()
         conn.close()
         return templates.TemplateResponse(
@@ -1769,6 +1867,8 @@ def mfa_verify(request: Request, code: str = Form(...), trust_device: str = Form
             {
                 "request": request,
                 "error": "Invalid or expired MFA code.",
+                "success": None,
+                "mfa_method": method,
                 "pending_name": request.session.get("pending_mfa_name") or "Organizer",
             },
             status_code=400,
@@ -1806,6 +1906,19 @@ def mfa_resend(request: Request, csrf_token: str = Form(...)):
     pending_user_id = request.session.get("pending_mfa_user_id")
     if not pending_user_id:
         return RedirectResponse(url="/login", status_code=302)
+    method = request.session.get("pending_mfa_method") or "sms"
+    if method == "totp":
+        return templates.TemplateResponse(
+            "mfa.html",
+            {
+                "request": request,
+                "error": "Authenticator app codes refresh every 30 seconds. Resend is not used for this method.",
+                "success": None,
+                "mfa_method": "totp",
+                "pending_name": request.session.get("pending_mfa_name") or "Organizer",
+            },
+            status_code=400,
+        )
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT id, name, phone, phone_verified_at FROM users WHERE id = ?", (int(pending_user_id),))
@@ -1823,6 +1936,8 @@ def mfa_resend(request: Request, csrf_token: str = Form(...)):
             {
                 "request": request,
                 "error": f"Could not resend MFA code: {reason}",
+                "success": None,
+                "mfa_method": "sms",
                 "pending_name": request.session.get("pending_mfa_name") or "Organizer",
             },
             status_code=503,
@@ -1833,6 +1948,7 @@ def mfa_resend(request: Request, csrf_token: str = Form(...)):
             "request": request,
             "error": None,
             "success": "MFA code resent.",
+            "mfa_method": "sms",
             "pending_name": request.session.get("pending_mfa_name") or "Organizer",
         },
     )
@@ -1882,7 +1998,10 @@ def profile_view(request: Request):
         return RedirectResponse(url="/login", status_code=302)
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, email, name, phone, phone_verified_at, mfa_enabled FROM users WHERE id = ?", (user_id,))
+    cur.execute(
+        "SELECT id, email, name, phone, phone_verified_at, mfa_enabled, totp_enabled, totp_secret FROM users WHERE id = ?",
+        (user_id,),
+    )
     user = cur.fetchone()
     conn.close()
     if not user:
@@ -1890,7 +2009,14 @@ def profile_view(request: Request):
         return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse(
         "profile.html",
-        {"request": request, "user": user, "error": None, "success": None},
+        {
+            "request": request,
+            "user": user,
+            "error": None,
+            "success": None,
+            "totp_qr_svg": None,
+            "totp_secret_preview": None,
+        },
     )
 
 
@@ -1913,7 +2039,14 @@ def profile_update(
         return PlainTextResponse("Bad CSRF token", status_code=400)
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, email, name, phone, phone_verified_at, mfa_enabled, password_hash FROM users WHERE id = ?", (user_id,))
+    cur.execute(
+        """
+        SELECT id, email, name, phone, phone_verified_at, mfa_enabled, password_hash, totp_enabled, totp_secret
+        FROM users
+        WHERE id = ?
+        """,
+        (user_id,),
+    )
     user = cur.fetchone()
     if not user:
         conn.close()
@@ -1922,6 +2055,8 @@ def profile_update(
 
     error = None
     success = None
+    totp_qr_svg = None
+    totp_secret_preview = None
 
     if action == "change_password":
         if not current_password or not pwd_context.verify(current_password, user["password_hash"]):
@@ -1969,21 +2104,69 @@ def profile_update(
 
     elif action == "set_mfa":
         enable = str(mfa_enabled or "").strip() == "1"
-        if enable and not user_phone_is_verified(user):
-            error = "Verify your phone before enabling MFA."
+        has_totp = int(user["totp_enabled"] or 0) == 1 and bool((user["totp_secret"] or "").strip())
+        if enable and not user_phone_is_verified(user) and not has_totp:
+            error = "Set up authenticator app MFA or verify your phone before enabling MFA."
         else:
             cur.execute("UPDATE users SET mfa_enabled = ? WHERE id = ?", (1 if enable else 0, user_id))
             success = "MFA updated."
+    elif action == "start_totp_enroll":
+        secret = generate_totp_secret()
+        request.session["pending_totp_secret"] = secret
+        uri = build_totp_uri(user, secret)
+        totp_qr_svg = build_totp_qr_svg(uri)
+        totp_secret_preview = secret
+        success = "Scan the QR code with your authenticator app, then enter the 6-digit code to confirm."
+    elif action == "confirm_totp_enroll":
+        secret = (request.session.get("pending_totp_secret") or "").strip()
+        code = (verification_code or "").strip()
+        if not secret:
+            error = "Start authenticator setup first."
+        elif not verify_totp_code(secret, code):
+            error = "Invalid authenticator code."
+            uri = build_totp_uri(user, secret)
+            totp_qr_svg = build_totp_qr_svg(uri)
+            totp_secret_preview = secret
+        else:
+            cur.execute(
+                "UPDATE users SET totp_secret = ?, totp_enabled = 1, mfa_enabled = 1 WHERE id = ?",
+                (secret, user_id),
+            )
+            request.session.pop("pending_totp_secret", None)
+            success = "Authenticator app MFA enabled."
+    elif action == "disable_totp":
+        cur.execute("UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ?", (user_id,))
+        request.session.pop("pending_totp_secret", None)
+        success = "Authenticator app MFA disabled."
     else:
         error = "Unknown profile action."
 
     conn.commit()
-    cur.execute("SELECT id, email, name, phone, phone_verified_at, mfa_enabled FROM users WHERE id = ?", (user_id,))
+    cur.execute(
+        "SELECT id, email, name, phone, phone_verified_at, mfa_enabled, totp_enabled, totp_secret FROM users WHERE id = ?",
+        (user_id,),
+    )
     fresh = cur.fetchone()
     conn.close()
+
+    pending_secret = (request.session.get("pending_totp_secret") or "").strip()
+    if not totp_qr_svg and pending_secret and not error and not success:
+        uri = build_totp_uri(fresh or user, pending_secret)
+        totp_qr_svg = build_totp_qr_svg(uri)
+        totp_secret_preview = pending_secret
+    elif not totp_secret_preview and pending_secret and totp_qr_svg:
+        totp_secret_preview = pending_secret
+
     return templates.TemplateResponse(
         "profile.html",
-        {"request": request, "user": fresh, "error": error, "success": success},
+        {
+            "request": request,
+            "user": fresh,
+            "error": error,
+            "success": success,
+            "totp_qr_svg": totp_qr_svg,
+            "totp_secret_preview": totp_secret_preview,
+        },
     )
 
 
