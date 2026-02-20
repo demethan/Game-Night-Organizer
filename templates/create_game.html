@@ -40,6 +40,10 @@
       <span class="badge" id="multipleTablesState">{% if last_game and last_game['multiple_tables'] %}ON{% else %}OFF{% endif %}</span>
     </label>
   </div>
+  <div id="coOrganizerCreateField" style="{% if not (last_game and last_game['multiple_tables']) %}display:none;{% endif %}">
+    <label>Co-organizers (optional)</label>
+    <input type="text" name="co_organizers" placeholder="email@site.com, another_user">
+  </div>
   <div>
     <button class="btn" type="submit">Create Game</button>
   </div>
@@ -74,9 +78,11 @@
   (function() {
     const toggle = document.getElementById('multipleTablesToggle');
     const state = document.getElementById('multipleTablesState');
+    const coField = document.getElementById('coOrganizerCreateField');
     if (!toggle || !state) return;
     function render() {
       state.textContent = toggle.checked ? 'ON' : 'OFF';
+      if (coField) coField.style.display = toggle.checked ? '' : 'none';
     }
     toggle.addEventListener('change', render);
     render();

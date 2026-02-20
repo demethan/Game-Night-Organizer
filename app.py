@@ -2170,6 +2170,7 @@ def new_game(
     total_players: int = Form(...),
     organizer_name: str = Form(...),
     organizer_phone: str = Form(None),
+    co_organizers: str = Form(None),
     multiple_tables: str = Form(None),
     csrf_token: str = Form(...),
 ):
@@ -2218,6 +2219,73 @@ def new_game(
         "INSERT INTO rsvps (game_id, name, phone, status, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         (game_id, cleaned_organizer, cleaned_organizer_phone, "HOST", seat_number, now),
     )
+
+    if is_multiple_tables:
+        raw_co_orgs = str(co_organizers or "").strip()
+        if raw_co_orgs:
+            raw_entries = [part.strip() for part in re.split(r"[,\n;]+", raw_co_orgs) if part and part.strip()]
+            if len(raw_entries) > 20:
+                conn.rollback()
+                conn.close()
+                return templates.TemplateResponse(
+                    "create_game.html",
+                    build_new_game_form_context(request, user_id, "Too many co-organizers. Maximum is 20."),
+                    status_code=400,
+                )
+
+            co_org_user_ids = set()
+            for raw_entry in raw_entries:
+                try:
+                    lookup_kind, lookup_value = parse_co_organizer_identifier(raw_entry)
+                except ValueError as e:
+                    conn.rollback()
+                    conn.close()
+                    return templates.TemplateResponse(
+                        "create_game.html",
+                        build_new_game_form_context(request, user_id, f"Invalid co-organizer: {str(e)}"),
+                        status_code=400,
+                    )
+
+                if lookup_kind == "email":
+                    cur.execute(
+                        """
+                        SELECT id, is_disabled
+                        FROM users
+                        WHERE LOWER(email) = ?
+                        LIMIT 1
+                        """,
+                        (lookup_value,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, is_disabled
+                        FROM users
+                        WHERE LOWER(COALESCE(username, '')) = ?
+                        LIMIT 1
+                        """,
+                        (lookup_value,),
+                    )
+                target = cur.fetchone()
+                if not target or int(target["is_disabled"] or 0) == 1:
+                    conn.rollback()
+                    conn.close()
+                    return templates.TemplateResponse(
+                        "create_game.html",
+                        build_new_game_form_context(request, user_id, f"Co-organizer not found: {raw_entry}"),
+                        status_code=400,
+                    )
+                target_id = int(target["id"])
+                if target_id == int(user_id):
+                    continue
+                co_org_user_ids.add(target_id)
+
+            for target_id in sorted(co_org_user_ids):
+                cur.execute(
+                    "INSERT OR IGNORE INTO game_co_organizers (game_id, user_id, invited_by, created_at) VALUES (?, ?, ?, ?)",
+                    (game_id, target_id, int(user_id), now),
+                )
+
     assign_seats_if_ready(conn, game_id, total_players)
     conn.commit()
     conn.close()
