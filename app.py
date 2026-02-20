@@ -1064,6 +1064,23 @@ def create_user_mfa_code(conn: sqlite3.Connection, user_id: int) -> str:
     return code
 
 
+def has_active_user_mfa_code(conn: sqlite3.Connection, user_id: int) -> bool:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT 1
+        FROM user_mfa_codes
+        WHERE user_id = ?
+          AND used_at IS NULL
+          AND expires_at >= ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (user_id, _utc_now_iso()),
+    )
+    return cur.fetchone() is not None
+
+
 def verify_user_mfa_code(conn: sqlite3.Connection, user_id: int, code: str) -> bool:
     cur = conn.cursor()
     cur.execute(
@@ -1693,6 +1710,13 @@ def login(
             conn.close()
             complete_login_session(request, row)
             return RedirectResponse(url="/dashboard", status_code=302)
+        pending_user_id = request.session.get("pending_mfa_user_id")
+        if pending_user_id and int(pending_user_id) == int(row["id"]) and has_active_user_mfa_code(conn, int(row["id"])):
+            conn.commit()
+            conn.close()
+            request.session["pending_mfa_user_id"] = int(row["id"])
+            request.session["pending_mfa_name"] = row["name"]
+            return RedirectResponse(url="/mfa", status_code=302)
         code = create_user_mfa_code(conn, int(row["id"]))
         sent, reason = send_user_mfa_sms(conn, row, code)
         conn.commit()
