@@ -102,6 +102,13 @@ input, select {
   font-size: 14px;
 }
 
+input[type="checkbox"] {
+  width: auto;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 label {
   display: block;
   margin-bottom: 6px;
