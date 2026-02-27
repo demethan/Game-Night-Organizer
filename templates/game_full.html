@@ -14,28 +14,43 @@
   </div>
   <form method="post" action="/g/{{ game['code'] }}/standby" id="standbyForm" class="grid grid-2">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <input type="hidden" name="verification_code" id="standbyVerificationCodeHidden" value="">
     <div class="standby-field">
       <label>Name</label>
       <input type="text" name="name" id="standbyName" required>
     </div>
     <div class="standby-field">
       <label>Cell (optional) <span id="standbyPhoneVerifyBadge" class="badge" style="margin-left:6px; display:none;"></span></label>
-      <input type="tel" name="phone" id="standbyPhone" placeholder="+1 (807) 555-1234">
+      <div class="row" style="align-items:center; gap:8px;">
+        <input type="tel" name="phone" id="standbyPhone" placeholder="+1 (807) 555-1234" style="flex:1;">
+        {% if twilio_enabled %}
+        <button class="btn secondary" type="button" id="standbyVerifyPhoneBtn">Verify</button>
+        {% endif %}
+      </div>
     </div>
     <div class="form-actions standby-field">
       <button class="btn" type="submit">Add me to standby list</button>
     </div>
   </form>
 </div>
+<div id="standbyMissingPhoneModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>Add Your Cell Number?</h3>
+    <p style="margin-bottom:10px;">Add your number if you want verification and SMS updates for this game.</p>
+    <div class="row" style="margin-top:12px;">
+      <button class="btn" type="button" onclick="focusStandbyPhoneField()">Add Number</button>
+      <button class="btn secondary" type="button" onclick="skipStandbyPhoneAndContinue()">Skip</button>
+    </div>
+  </div>
+</div>
 {% if twilio_enabled %}
 <div id="standbyVerifyModal" class="modal" style="{% if verify_required %}display:flex;{% else %}display:none;{% endif %}">
   <div class="modal-card">
     <h3>Verify Your Phone</h3>
-    <p style="margin-bottom:10px;">Enter the 6-digit code sent by text.</p>
+    <p id="standbyVerifyModalMessage" style="margin-bottom:10px;">Enter the 6-digit code sent by text.</p>
     <input type="text" id="standbyVerificationCodeInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
     <div class="row" style="margin-top:12px;">
-      <button class="btn" type="button" onclick="applyStandbyVerifyCode()">Continue</button>
+      <button class="btn" type="button" onclick="applyStandbyVerifyCode()">Verify</button>
+      <button class="btn secondary" type="button" onclick="sendStandbyVerifyCode()">Send Code</button>
       <button class="btn secondary" type="button" onclick="closeStandbyVerifyModal()">Close</button>
     </div>
   </div>
@@ -60,50 +75,32 @@
 (function() {
   const nameInput = document.getElementById('standbyName');
   const phoneInput = document.getElementById('standbyPhone');
-  const verifyBadge = document.getElementById('standbyPhoneVerifyBadge');
   const savedName = localStorage.getItem('poker_name');
   const savedPhone = localStorage.getItem('poker_phone');
   if (savedName) nameInput.value = savedName;
   if (savedPhone && phoneInput) phoneInput.value = savedPhone;
-
-  function updateStandbyPhoneVerifyBadge() {
-    if (!verifyBadge || !phoneInput) return;
-    const hasPhone = !!(phoneInput.value || '').trim();
-    if (!hasPhone) {
-      verifyBadge.style.display = 'none';
-      verifyBadge.textContent = '';
-      return;
-    }
-    const verifyRequired = {{ verify_required | tojson }};
-    verifyBadge.style.display = 'inline-flex';
-    if (verifyRequired) {
-      verifyBadge.textContent = 'Not verified';
-    } else {
-      verifyBadge.textContent = '✓ Verified';
-    }
-  }
-  phoneInput && phoneInput.addEventListener('input', updateStandbyPhoneVerifyBadge);
   updateStandbyPhoneVerifyBadge();
 })();
 
-document.getElementById('standbyForm').addEventListener('submit', function(event) {
+document.getElementById('standbyForm').addEventListener('submit', async function(event) {
+  event.preventDefault();
   const nameInput = document.getElementById('standbyName');
   const phoneInput = document.getElementById('standbyPhone');
-  const verifyModal = document.getElementById('standbyVerifyModal');
-  const verifyHidden = document.getElementById('standbyVerificationCodeHidden');
   if (nameInput.value.trim()) {
     localStorage.setItem('poker_name', nameInput.value.trim());
   }
   localStorage.setItem('poker_phone', (phoneInput?.value || '').trim());
-  const verifyRequired = {{ verify_required | tojson }};
-  if (verifyRequired && verifyModal && (phoneInput?.value || '').trim()) {
-    if (!((verifyHidden?.value || '').trim())) {
-      openStandbyVerifyModal();
-      event.preventDefault();
-      return;
-    }
+  const normalized = normalizeStandbyPhone(phoneInput?.value || '');
+  if (!normalized && !window._skipStandbyPhonePrompt) {
+    openStandbyMissingPhoneModal();
+    return;
+  }
+  if (normalized && {{ twilio_enabled | tojson }} && !isStandbyPhoneVerified(normalized)) {
+    const verifyState = await sendStandbyVerifyCode();
+    if (verifyState === 'started') return;
   }
   localStorage.setItem('poker_standby_{{ game["code"] }}', '1');
+  event.target.submit();
 });
 
 (function() {
@@ -134,6 +131,97 @@ function openStandbyVerifyModal() {
   }
 }
 
+function normalizeStandbyPhone(value) {
+  let digits = String(value || '').replace(/[^0-9]/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
+  return digits.length === 10 ? digits : '';
+}
+
+function standbyVerifiedPhoneKey() {
+  return 'poker_verified_phone_{{ game["code"] }}';
+}
+
+function isStandbyPhoneVerified(normalizedPhone) {
+  return !!normalizedPhone && localStorage.getItem(standbyVerifiedPhoneKey()) === normalizedPhone;
+}
+
+function updateStandbyPhoneVerifyBadge() {
+  const verifyBadge = document.getElementById('standbyPhoneVerifyBadge');
+  const phoneInput = document.getElementById('standbyPhone');
+  if (!verifyBadge || !phoneInput) return;
+  const normalized = normalizeStandbyPhone(phoneInput.value || '');
+  if (!normalized) {
+    verifyBadge.style.display = 'none';
+    verifyBadge.textContent = '';
+    return;
+  }
+  verifyBadge.style.display = 'inline-flex';
+  verifyBadge.textContent = isStandbyPhoneVerified(normalized) ? '✓ Verified' : 'Not verified';
+}
+
+function openStandbyMissingPhoneModal() {
+  const modal = document.getElementById('standbyMissingPhoneModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeStandbyMissingPhoneModal() {
+  const modal = document.getElementById('standbyMissingPhoneModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function focusStandbyPhoneField() {
+  closeStandbyMissingPhoneModal();
+  const phoneInput = document.getElementById('standbyPhone');
+  if (phoneInput) phoneInput.focus();
+}
+
+function skipStandbyPhoneAndContinue() {
+  closeStandbyMissingPhoneModal();
+  window._skipStandbyPhonePrompt = true;
+  document.getElementById('standbyForm').requestSubmit();
+}
+
+async function sendStandbyVerifyCode() {
+  const phoneInput = document.getElementById('standbyPhone');
+  const phone = (phoneInput?.value || '').trim();
+  const normalized = normalizeStandbyPhone(phone);
+  const verifyBtn = document.getElementById('standbyVerifyPhoneBtn');
+  const verifyMessage = document.getElementById('standbyVerifyModalMessage');
+  if (!normalized) {
+    if (phoneInput) phoneInput.focus();
+    return false;
+  }
+  if (verifyBtn) verifyBtn.disabled = true;
+  try {
+    const body = new URLSearchParams();
+    body.set('phone', phone);
+    body.set('csrf_token', document.querySelector('#standbyForm input[name="csrf_token"]').value || '');
+    const response = await fetch('/g/{{ game["code"] }}/verify/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      alert(data.error || 'Could not send verification code.');
+      return false;
+    }
+    if (data.already_verified) {
+      localStorage.setItem(standbyVerifiedPhoneKey(), normalized);
+      updateStandbyPhoneVerifyBadge();
+      return 'verified';
+    }
+    if (verifyMessage) verifyMessage.textContent = 'Enter the 6-digit code sent by text.';
+    openStandbyVerifyModal();
+    return 'started';
+  } catch (e) {
+    alert('Could not send verification code.');
+    return false;
+  } finally {
+    if (verifyBtn) verifyBtn.disabled = false;
+  }
+}
+
 function closeStandbyVerifyModal() {
   const modal = document.getElementById('standbyVerifyModal');
   if (!modal) return;
@@ -142,15 +230,55 @@ function closeStandbyVerifyModal() {
 
 function applyStandbyVerifyCode() {
   const input = document.getElementById('standbyVerificationCodeInput');
-  const hidden = document.getElementById('standbyVerificationCodeHidden');
   const code = (input?.value || '').trim();
   if (!code) {
     input && input.focus();
     return;
   }
-  if (hidden) hidden.value = code;
-  closeStandbyVerifyModal();
-  document.getElementById('standbyForm').submit();
+  const phoneInput = document.getElementById('standbyPhone');
+  const normalized = normalizeStandbyPhone(phoneInput?.value || '');
+  if (!normalized) {
+    phoneInput && phoneInput.focus();
+    return;
+  }
+  const body = new URLSearchParams();
+  body.set('phone', phoneInput.value || '');
+  body.set('verification_code', code);
+  body.set('csrf_token', document.querySelector('#standbyForm input[name="csrf_token"]').value || '');
+  fetch('/g/{{ game["code"] }}/verify/check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+    .then(async (response) => {
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        alert(data.error || 'Invalid verification code.');
+        return;
+      }
+      localStorage.setItem(standbyVerifiedPhoneKey(), normalized);
+      updateStandbyPhoneVerifyBadge();
+      closeStandbyVerifyModal();
+      document.getElementById('standbyForm').requestSubmit();
+    })
+    .catch(() => {
+      alert('Could not verify phone number.');
+    });
 }
+
+(function() {
+  const phoneInput = document.getElementById('standbyPhone');
+  const verifyBtn = document.getElementById('standbyVerifyPhoneBtn');
+  if (phoneInput) {
+    phoneInput.addEventListener('input', () => {
+      window._skipStandbyPhonePrompt = false;
+      updateStandbyPhoneVerifyBadge();
+    });
+  }
+  if (verifyBtn) {
+    verifyBtn.addEventListener('click', () => { sendStandbyVerifyCode(); });
+  }
+  updateStandbyPhoneVerifyBadge();
+})();
 </script>
 {% endblock %}

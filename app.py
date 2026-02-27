@@ -19,7 +19,7 @@ import urllib.request
 from xml.sax.saxutils import escape as xml_escape
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, StreamingResponse, JSONResponse
@@ -581,7 +581,11 @@ def seat_assignment(seat_number: Optional[int], total_players: int, multiple_tab
 
 def seat_display(seat_number: Optional[int], total_players: int, multiple_tables: bool = False) -> Optional[str]:
     label, seat_in_table = seat_assignment(seat_number, total_players, multiple_tables)
-    if not label or not seat_in_table:
+    if not seat_in_table:
+        return None
+    if not multiple_tables:
+        return str(seat_in_table)
+    if not label:
         return None
     return f"{label}{seat_in_table}"
 
@@ -1306,6 +1310,91 @@ def confirm_phone_code(conn: sqlite3.Connection, game_id: int, phone_10: str, co
 def send_phone_verification_sms(conn: sqlite3.Connection, game_row, phone_10: str, code: str) -> tuple[bool, str]:
     body = f"{game_row['title']}: verification code {code}. Expires in 10 minutes."
     return send_twilio_sms_guarded(conn, int(game_row["id"]), phone_10, body, "verify")
+
+
+def game_broadcast_recipients(conn: sqlite3.Connection, game_id: int) -> list[str]:
+    cur = conn.cursor()
+    phones: list[str] = []
+    seen = set()
+    for query in (
+        "SELECT phone FROM rsvps WHERE game_id = ? AND phone IS NOT NULL AND TRIM(phone) != '' ORDER BY id ASC",
+        "SELECT phone FROM standby WHERE game_id = ? AND phone IS NOT NULL AND TRIM(phone) != '' ORDER BY id ASC",
+    ):
+        cur.execute(query, (game_id,))
+        for row in cur.fetchall():
+            phone = (row["phone"] or "").strip()
+            if not phone or phone in seen:
+                continue
+            seen.add(phone)
+            phones.append(phone)
+    return phones
+
+
+def _append_unique_phone(phones: list[str], seen: set[str], phone: Optional[str]) -> None:
+    value = (phone or "").strip()
+    if not value or value in seen:
+        return
+    seen.add(value)
+    phones.append(value)
+
+
+def filtered_game_broadcast_recipients(
+    conn: sqlite3.Connection,
+    game_row,
+    filters: List[str],
+    table_filter: Optional[str],
+    cc_host: bool,
+) -> List[str]:
+    selected = {str(item or "").strip().upper() for item in filters if str(item or "").strip()}
+    phones: List[str] = []
+    seen: set[str] = set()
+    cur = conn.cursor()
+    host_phone = None
+
+    if {"IN", "OUT", "LATE", "TABLE"} & selected:
+        cur.execute(
+            "SELECT status, phone, seat_number FROM rsvps WHERE game_id = ? AND phone IS NOT NULL AND TRIM(phone) != '' ORDER BY id ASC",
+            (int(game_row["id"]),),
+        )
+        for row in cur.fetchall():
+            status = str(row["status"] or "").strip().upper()
+            phone = row["phone"]
+            if status == "HOST":
+                host_phone = phone
+                continue
+            include = False
+            if "IN" in selected and status == "IN":
+                include = True
+            if "OUT" in selected and status == "OUT":
+                include = True
+            if "LATE" in selected and status == "LATE":
+                include = True
+            if "TABLE" in selected and table_filter and game_uses_multiple_tables(game_row):
+                table_label, _ = seat_assignment(row["seat_number"], game_row["total_players"], True)
+                if table_label == table_filter:
+                    include = True
+            if include:
+                _append_unique_phone(phones, seen, phone)
+    else:
+        cur.execute(
+            "SELECT phone FROM rsvps WHERE game_id = ? AND status = 'HOST' AND phone IS NOT NULL AND TRIM(phone) != '' ORDER BY id ASC LIMIT 1",
+            (int(game_row["id"]),),
+        )
+        host_row = cur.fetchone()
+        if host_row:
+            host_phone = host_row["phone"]
+
+    if "STANDBY" in selected:
+        cur.execute(
+            "SELECT phone FROM standby WHERE game_id = ? AND phone IS NOT NULL AND TRIM(phone) != '' ORDER BY id ASC",
+            (int(game_row["id"]),),
+        )
+        for row in cur.fetchall():
+            _append_unique_phone(phones, seen, row["phone"])
+
+    if cc_host:
+        _append_unique_phone(phones, seen, host_phone)
+    return phones
 
 
 def maybe_send_choice_confirmation_sms(conn: sqlite3.Connection, game_row, phone_10: Optional[str], status: str, late_eta: Optional[str], seat_label: Optional[str]) -> None:
@@ -2536,6 +2625,7 @@ def view_game(request: Request, game_id: int):
     co_organizers = cur.fetchall()
 
     in_count = count_in(conn, game_id)
+    broadcast_table_options = table_labels(len(table_sizes(game["total_players"], True))) if game_uses_multiple_tables(game) else []
     conn.close()
 
     return templates.TemplateResponse(
@@ -2548,6 +2638,7 @@ def view_game(request: Request, game_id: int):
             "in_count": in_count,
             "is_owner": is_owner,
             "co_organizers": co_organizers,
+            "broadcast_table_options": broadcast_table_options,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
@@ -2650,6 +2741,77 @@ def organizer_send_text(request: Request, game_id: int, rsvp_id: int, csrf_token
                 status_code=503,
             )
         return JSONResponse({"ok": True, "provider": "twilio", "message_sid": result})
+    finally:
+        conn.close()
+
+
+@app.post("/games/{game_id}/broadcast-text")
+def organizer_broadcast_text(
+    request: Request,
+    game_id: int,
+    message: str = Form(...),
+    recipient_filters: List[str] = Form(None),
+    table_filter: str = Form(None),
+    cc_host: str = Form(None),
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+
+    raw_message = (message or "").strip()
+    filters = [str(item or "").strip().upper() for item in (recipient_filters or []) if str(item or "").strip()]
+    selected = set(filters)
+    selected_table = str(table_filter or "").strip().upper() or None
+    include_host = str(cc_host or "").strip().lower() in {"1", "true", "on", "yes"}
+    if not raw_message:
+        return RedirectResponse(url=f"/games/{game_id}?error=Message%20is%20required", status_code=302)
+    if len(raw_message) > 480:
+        return RedirectResponse(url=f"/games/{game_id}?error=Message%20must%20be%20480%20characters%20or%20less", status_code=302)
+    if not selected and not include_host:
+        return RedirectResponse(url=f"/games/{game_id}?error=Pick%20at%20least%20one%20recipient%20group", status_code=302)
+
+    conn = get_db()
+    try:
+        game, _ = get_game_for_manager(conn, game_id, user_id)
+        if not game:
+            return RedirectResponse(url="/dashboard", status_code=302)
+        allowed_filters = {"IN", "OUT", "LATE", "STANDBY"}
+        if game_uses_multiple_tables(game):
+            allowed_filters.add("TABLE")
+        if selected - allowed_filters:
+            return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20recipient%20selection", status_code=302)
+        if "TABLE" in selected:
+            if not game_uses_multiple_tables(game):
+                return RedirectResponse(url=f"/games/{game_id}?error=Table%20filter%20requires%20multiple%20table%20mode", status_code=302)
+            valid_tables = set(table_labels(len(table_sizes(game["total_players"], True))))
+            if not selected_table or selected_table not in valid_tables:
+                return RedirectResponse(url=f"/games/{game_id}?error=Pick%20a%20valid%20table", status_code=302)
+        recipients = filtered_game_broadcast_recipients(conn, game, filters, selected_table, include_host)
+        if not recipients:
+            return RedirectResponse(url=f"/games/{game_id}?error=No%20phone%20numbers%20available%20for%20this%20game", status_code=302)
+
+        sent_count = 0
+        blocked_count = 0
+        last_error = None
+        body = f"{game['title']}: {raw_message}"
+        for phone in recipients:
+            sent, result = send_twilio_sms_guarded(conn, int(game["id"]), phone, body, "organizer_broadcast")
+            if sent:
+                sent_count += 1
+            else:
+                blocked_count += 1
+                last_error = result
+        conn.commit()
+        if sent_count == 0:
+            detail = urllib.parse.quote(last_error or "Could not send messages")
+            return RedirectResponse(url=f"/games/{game_id}?error={detail}", status_code=302)
+        success = urllib.parse.quote(f"Announcement sent to {sent_count} phone(s)")
+        if blocked_count:
+            success = urllib.parse.quote(f"Announcement sent to {sent_count} phone(s); {blocked_count} blocked/failed")
+        return RedirectResponse(url=f"/games/{game_id}?success={success}", status_code=302)
     finally:
         conn.close()
 
@@ -3226,6 +3388,80 @@ def host_snapshot(host_code: str):
     payload = host_snapshot_payload(conn, game)
     conn.close()
     return payload
+
+
+@app.post("/g/{code}/verify/start")
+def start_invitee_phone_verify(
+    request: Request,
+    code: str,
+    phone: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    if not verify_csrf(request, csrf_token):
+        return JSONResponse({"ok": False, "error": "Bad CSRF token"}, status_code=400)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM games WHERE code = ?", (code,))
+    game = cur.fetchone()
+    if not game or is_game_cancelled(game) or is_game_expired(game):
+        conn.close()
+        return JSONResponse({"ok": False, "error": "Game not found"}, status_code=404)
+    if not should_verify_phone(game):
+        conn.close()
+        return JSONResponse({"ok": False, "error": "Phone verification is not enabled for this game"}, status_code=400)
+    try:
+        cleaned_phone = normalize_phone_10(phone)
+    except ValueError:
+        conn.close()
+        return JSONResponse({"ok": False, "error": "Invalid phone number"}, status_code=400)
+    if not cleaned_phone:
+        conn.close()
+        return JSONResponse({"ok": False, "error": "Phone number is required"}, status_code=400)
+    if phone_is_verified(conn, int(game["id"]), cleaned_phone):
+        conn.close()
+        return JSONResponse({"ok": True, "already_verified": True})
+    code_value = create_or_refresh_phone_code(conn, int(game["id"]), cleaned_phone)
+    sent, reason = send_phone_verification_sms(conn, game, cleaned_phone, code_value)
+    conn.commit()
+    conn.close()
+    if not sent:
+        return JSONResponse({"ok": False, "error": f"Could not send verification code: {reason}"}, status_code=503)
+    return JSONResponse({"ok": True, "already_verified": False})
+
+
+@app.post("/g/{code}/verify/check")
+def check_invitee_phone_verify(
+    request: Request,
+    code: str,
+    phone: str = Form(...),
+    verification_code: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    if not verify_csrf(request, csrf_token):
+        return JSONResponse({"ok": False, "error": "Bad CSRF token"}, status_code=400)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM games WHERE code = ?", (code,))
+    game = cur.fetchone()
+    if not game or is_game_cancelled(game) or is_game_expired(game):
+        conn.close()
+        return JSONResponse({"ok": False, "error": "Game not found"}, status_code=404)
+    try:
+        cleaned_phone = normalize_phone_10(phone)
+    except ValueError:
+        conn.close()
+        return JSONResponse({"ok": False, "error": "Invalid phone number"}, status_code=400)
+    cleaned_code = "".join(ch for ch in str(verification_code or "") if ch.isdigit())
+    if len(cleaned_code) != 6:
+        conn.close()
+        return JSONResponse({"ok": False, "error": "Enter the 6-digit verification code"}, status_code=400)
+    if not confirm_phone_code(conn, int(game["id"]), cleaned_phone, cleaned_code):
+        conn.commit()
+        conn.close()
+        return JSONResponse({"ok": False, "error": "Invalid or expired verification code"}, status_code=400)
+    conn.commit()
+    conn.close()
+    return JSONResponse({"ok": True})
 
 
 @app.post("/g/{code}/rsvp", response_class=HTMLResponse)

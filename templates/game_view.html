@@ -32,6 +32,7 @@
 <div class="row organizer-actions">
   <button class="btn secondary copy-btn invite-link-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
   <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
+  <button class="btn secondary" type="button" id="openBroadcastModal">Send Announcement</button>
   <form method="post" action="/games/{{ game['id'] }}/sms-toggle" onsubmit="return confirm('{% if game['sms_enabled'] %}Disable all outbound SMS for this game?{% else %}Enable outbound SMS for this game?{% endif %}');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['sms_enabled'] %}Disable SMS{% else %}Enable SMS{% endif %}</button>
@@ -41,6 +42,68 @@
   <span class="badge">SMS: {% if game['sms_enabled'] %}ON{% else %}OFF{% endif %}</span>
   <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
   {% if game['is_cancelled'] %}<span class="badge">Status: Cancelled</span>{% endif %}
+</div>
+<div id="broadcastModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>Send Announcement</h3>
+    <p style="margin-bottom:10px;">Pick one or more recipient groups for this game announcement.</p>
+    <form method="post" action="/games/{{ game['id'] }}/broadcast-text" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div>
+        <label>Recipients</label>
+        <div class="row" style="gap:12px; flex-wrap:wrap; margin-top:6px;">
+          <label style="display:flex; align-items:center; gap:6px; margin:0;">
+            <input type="checkbox" name="recipient_filters" value="IN" style="width:auto;">
+            IN
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; margin:0;">
+            <input type="checkbox" name="recipient_filters" value="OUT" style="width:auto;">
+            OUT
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; margin:0;">
+            <input type="checkbox" name="recipient_filters" value="LATE" style="width:auto;">
+            LATE
+          </label>
+          {% if game['multiple_tables'] %}
+          <label style="display:flex; align-items:center; gap:6px; margin:0;">
+            <input type="checkbox" name="recipient_filters" value="TABLE" id="broadcastFilterTable" style="width:auto;">
+            TABLE
+          </label>
+          {% endif %}
+          <label style="display:flex; align-items:center; gap:6px; margin:0;">
+            <input type="checkbox" name="recipient_filters" value="STANDBY" style="width:auto;">
+            STANDBY
+          </label>
+        </div>
+      </div>
+      {% if game['multiple_tables'] %}
+      <div id="broadcastTableWrap" style="display:none;">
+        <label>Table</label>
+        <select name="table_filter" id="broadcastTableSelect">
+          <option value="">Pick table</option>
+          {% for table_label in broadcast_table_options %}
+          <option value="{{ table_label }}">{{ table_label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+      <div>
+        <label style="display:flex; align-items:center; gap:8px; margin:0;">
+          <input type="checkbox" name="cc_host" value="1" style="width:auto;">
+          CC host
+        </label>
+      </div>
+      <div>
+        <label>Message</label>
+        <textarea name="message" id="broadcastMessage" rows="5" maxlength="480" placeholder="Tournament update, table move, break notice, start time change..." required></textarea>
+      </div>
+      <div class="row">
+        <span class="badge" id="broadcastCounter">0 / 480</span>
+        <button class="btn" type="submit">Send</button>
+        <button class="btn secondary" type="button" id="closeBroadcastModal">Cancel</button>
+      </div>
+    </form>
+  </div>
 </div>
 {% if game['multiple_tables'] %}
 <div class="card" style="margin: 12px 0;">
@@ -266,12 +329,21 @@
     const sortTimeBtn = document.getElementById('sortTime');
     const sortSeatBtn = document.getElementById('sortSeat');
     const detailsModal = document.getElementById('detailsModal');
+    const broadcastModal = document.getElementById('broadcastModal');
     const openDetailsModalBtn = document.getElementById('openDetailsModal');
+    const openBroadcastModalBtn = document.getElementById('openBroadcastModal');
+    const closeBroadcastModalBtn = document.getElementById('closeBroadcastModal');
     const closeDetailsModalBtn = document.getElementById('closeDetailsModal');
     const addPlayerModal = document.getElementById('addPlayerModal');
     const openAddPlayerModalBtn = document.getElementById('openAddPlayerModal');
     const closeAddPlayerModalBtn = document.getElementById('closeAddPlayerModal');
     const detailsForm = document.getElementById('gameDetailsForm');
+    const broadcastForm = broadcastModal ? broadcastModal.querySelector('form') : null;
+    const broadcastMessage = document.getElementById('broadcastMessage');
+    const broadcastCounter = document.getElementById('broadcastCounter');
+    const broadcastTableFilter = document.getElementById('broadcastFilterTable');
+    const broadcastTableWrap = document.getElementById('broadcastTableWrap');
+    const broadcastTableSelect = document.getElementById('broadcastTableSelect');
     const detailsStatus = document.getElementById('detailsSaveStatus');
     const detailsLocation = detailsForm ? detailsForm.querySelector('input[name="location"]') : null;
     const detailsDate = detailsForm ? detailsForm.querySelector('input[name="game_date"]') : null;
@@ -617,8 +689,22 @@
       e.preventDefault();
       if (detailsModal) detailsModal.style.display = 'flex';
     });
+    openBroadcastModalBtn && openBroadcastModalBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (broadcastModal) broadcastModal.style.display = 'flex';
+      if (broadcastMessage) {
+        broadcastMessage.focus();
+        if (broadcastCounter) broadcastCounter.textContent = `${broadcastMessage.value.length} / 480`;
+      }
+    });
+    closeBroadcastModalBtn && closeBroadcastModalBtn.addEventListener('click', () => {
+      if (broadcastModal) broadcastModal.style.display = 'none';
+    });
     closeDetailsModalBtn && closeDetailsModalBtn.addEventListener('click', () => {
       if (detailsModal) detailsModal.style.display = 'none';
+    });
+    broadcastModal && broadcastModal.addEventListener('click', (e) => {
+      if (e.target === broadcastModal) broadcastModal.style.display = 'none';
     });
     detailsModal && detailsModal.addEventListener('click', (e) => {
       if (e.target === detailsModal) detailsModal.style.display = 'none';
@@ -666,6 +752,34 @@
         }
       });
     }
+
+    broadcastMessage && broadcastMessage.addEventListener('input', () => {
+      if (broadcastCounter) broadcastCounter.textContent = `${broadcastMessage.value.length} / 480`;
+    });
+
+    function syncBroadcastTableVisibility() {
+      if (!broadcastTableWrap || !broadcastTableFilter) return;
+      const show = !!broadcastTableFilter.checked;
+      broadcastTableWrap.style.display = show ? 'block' : 'none';
+      if (!show && broadcastTableSelect) broadcastTableSelect.value = '';
+    }
+
+    broadcastTableFilter && broadcastTableFilter.addEventListener('change', syncBroadcastTableVisibility);
+    syncBroadcastTableVisibility();
+
+    broadcastForm && broadcastForm.addEventListener('submit', (e) => {
+      const pickedFilters = Array.from(broadcastForm.querySelectorAll('input[name="recipient_filters"]:checked'));
+      const ccHost = broadcastForm.querySelector('input[name="cc_host"]');
+      if (pickedFilters.length === 0 && !ccHost?.checked) {
+        e.preventDefault();
+        alert('Pick at least one recipient group.');
+        return;
+      }
+      if (broadcastTableFilter?.checked && !(broadcastTableSelect?.value || '').trim()) {
+        e.preventDefault();
+        alert('Pick a table.');
+      }
+    });
 
     applySort();
     applyFilter();
