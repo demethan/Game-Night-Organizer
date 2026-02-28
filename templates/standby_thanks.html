@@ -7,5 +7,8 @@
 <script>
   localStorage.setItem('poker_standby_{{ game["code"] }}', '1');
   localStorage.setItem('poker_standby_pos_{{ game["code"] }}', '{{ position }}');
+  {% if invitee_token %}
+  localStorage.setItem('poker_invitee_token', '{{ invitee_token }}');
+  {% endif %}
 </script>
 {% endblock %}

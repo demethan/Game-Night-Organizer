@@ -79,6 +79,7 @@
   <form method="post" action="/g/{{ game['code'] }}/rsvp" id="rsvpForm" class="invite-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="rsvp_token" id="rsvpToken" value="">
+    <input type="hidden" name="invitee_token" id="inviteeToken" value="">
     <input type="hidden" name="verification_code" id="verification_code" value="">
     <div>
       <div class="invite-label-row">
@@ -161,11 +162,14 @@
   const nameInput = document.getElementById('name');
   const phoneInput = document.getElementById('phone');
   const tokenInput = document.getElementById('rsvpToken');
+  const inviteeTokenInput = document.getElementById('inviteeToken');
   const csrfInput = document.querySelector('#rsvpForm input[name="csrf_token"]');
   const savedName = localStorage.getItem('poker_name');
   const savedPhone = localStorage.getItem('poker_phone');
   const tokenKey = 'poker_rsvp_token_{{ game["code"] }}';
+  const inviteeTokenKey = 'poker_invitee_token';
   let savedToken = localStorage.getItem(tokenKey);
+  let savedInviteeToken = localStorage.getItem(inviteeTokenKey);
 
   function createToken() {
     if (window.crypto && window.crypto.getRandomValues) {
@@ -181,6 +185,11 @@
     localStorage.setItem(tokenKey, savedToken);
   }
   if (tokenInput) tokenInput.value = savedToken;
+  if (!savedInviteeToken) {
+    savedInviteeToken = createToken();
+    localStorage.setItem(inviteeTokenKey, savedInviteeToken);
+  }
+  if (inviteeTokenInput) inviteeTokenInput.value = savedInviteeToken;
 
   if (savedName) nameInput.value = savedName;
   if (savedPhone) phoneInput.value = savedPhone;
@@ -191,7 +200,9 @@
     try {
       const body = new URLSearchParams();
       body.set('name', name || '');
+      body.set('phone', (phoneInput?.value || '').trim());
       body.set('rsvp_token', savedToken || '');
+      body.set('invitee_token', savedInviteeToken || '');
       body.set('csrf_token', csrfInput.value);
       const response = await fetch('/g/{{ game["code"] }}/contact', {
         method: 'POST',
@@ -207,6 +218,11 @@
       if (data && data.name && nameInput) {
         nameInput.value = data.name;
         localStorage.setItem('poker_name', data.name);
+      }
+      if (data && data.invitee_token) {
+        savedInviteeToken = data.invitee_token;
+        localStorage.setItem(inviteeTokenKey, data.invitee_token);
+        if (inviteeTokenInput) inviteeTokenInput.value = data.invitee_token;
       }
     } catch (e) {
       // Ignore network/transient errors.

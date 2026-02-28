@@ -397,6 +397,47 @@ def init_db():
     )
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS organizer_invitees (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organizer_id INTEGER NOT NULL,
+            phone TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            FOREIGN KEY (organizer_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_organizer_invitees_org_phone ON organizer_invitees(organizer_id, phone)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_organizer_invitees_phone ON organizer_invitees(phone)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS global_invitees (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS invitee_browser_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_hash TEXT NOT NULL UNIQUE,
+            phone TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_invitee_browser_tokens_phone ON invitee_browser_tokens(phone)")
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS sms_outbound (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             game_id INTEGER,
@@ -1548,6 +1589,114 @@ def normalize_rsvp_token(value: Optional[str]) -> Optional[str]:
         if not (ch.isalnum() or ch in {"-", "_"}):
             return None
     return token
+
+
+def normalize_invitee_token(value: Optional[str]) -> Optional[str]:
+    return normalize_rsvp_token(value)
+
+
+def invitee_token_hash(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def create_invitee_token() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def lookup_phone_by_invitee_token(conn: sqlite3.Connection, invitee_token: Optional[str]) -> Optional[str]:
+    token = normalize_invitee_token(invitee_token)
+    if not token:
+        return None
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT phone
+        FROM invitee_browser_tokens
+        WHERE token_hash = ?
+        LIMIT 1
+        """,
+        (invitee_token_hash(token),),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    cur.execute(
+        "UPDATE invitee_browser_tokens SET updated_at = ?, last_seen_at = ? WHERE token_hash = ?",
+        (_utc_now_iso(), _utc_now_iso(), invitee_token_hash(token)),
+    )
+    return (row["phone"] or "").strip() or None
+
+
+def ensure_invitee_token_for_phone(conn: sqlite3.Connection, phone_10: str, preferred_token: Optional[str]) -> str:
+    now = _utc_now_iso()
+    token = normalize_invitee_token(preferred_token)
+    cur = conn.cursor()
+    if token:
+        token_hash = invitee_token_hash(token)
+        cur.execute("SELECT phone FROM invitee_browser_tokens WHERE token_hash = ? LIMIT 1", (token_hash,))
+        row = cur.fetchone()
+        if row and str(row["phone"] or "").strip() == phone_10:
+            cur.execute(
+                "UPDATE invitee_browser_tokens SET updated_at = ?, last_seen_at = ? WHERE token_hash = ?",
+                (now, now, token_hash),
+            )
+            return token
+    fresh = create_invitee_token()
+    cur.execute(
+        """
+        INSERT INTO invitee_browser_tokens (token_hash, phone, created_at, updated_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (invitee_token_hash(fresh), phone_10, now, now, now),
+    )
+    return fresh
+
+
+def upsert_invitee_profiles(conn: sqlite3.Connection, organizer_id: int, phone_10: Optional[str], name: Optional[str]) -> None:
+    phone = (phone_10 or "").strip()
+    display_name = (name or "").strip()
+    if not phone or not display_name:
+        return
+    now = _utc_now_iso()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO organizer_invitees (organizer_id, phone, name, created_at, updated_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(organizer_id, phone) DO UPDATE SET
+            name = excluded.name,
+            updated_at = excluded.updated_at,
+            last_seen_at = excluded.last_seen_at
+        """,
+        (int(organizer_id), phone, display_name, now, now, now),
+    )
+    cur.execute(
+        """
+        INSERT INTO global_invitees (phone, name, created_at, updated_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(phone) DO UPDATE SET
+            name = excluded.name,
+            updated_at = excluded.updated_at,
+            last_seen_at = excluded.last_seen_at
+        """,
+        (phone, display_name, now, now, now),
+    )
+
+
+def lookup_invitee_profile(conn: sqlite3.Connection, organizer_id: int, phone_10: Optional[str]) -> Optional[sqlite3.Row]:
+    phone = (phone_10 or "").strip()
+    if not phone:
+        return None
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT phone, name FROM organizer_invitees WHERE organizer_id = ? AND phone = ? LIMIT 1",
+        (int(organizer_id), phone),
+    )
+    row = cur.fetchone()
+    if row:
+        return row
+    cur.execute("SELECT phone, name FROM global_invitees WHERE phone = ? LIMIT 1", (phone,))
+    return cur.fetchone()
 
 
 def cleanup_old_games(conn: sqlite3.Connection, organizer_id: int) -> None:
@@ -3036,6 +3185,7 @@ def update_rsvp(
         "UPDATE rsvps SET name = ?, phone = ?, status = ?, late_eta = ?, seat_number = ? WHERE id = ?",
         (cleaned_name, cleaned_phone, status, (late_eta or "").strip() or None, new_seat, rsvp_id),
     )
+    upsert_invitee_profiles(conn, int(game["organizer_id"]), cleaned_phone, cleaned_name)
     assign_seats_if_ready(conn, game_id, game["total_players"])
     maybe_notify_organizer_when_out(conn, game, previous_status, status, cleaned_name)
     notify_seat_sms_when_full(conn, game)
@@ -3099,6 +3249,7 @@ def add_rsvp(
         "INSERT INTO rsvps (game_id, name, phone, status, late_eta, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (game_id, cleaned_name, cleaned_phone, status, None, seat_number, now),
     )
+    upsert_invitee_profiles(conn, int(game["organizer_id"]), cleaned_phone, cleaned_name)
     assign_seats_if_ready(conn, game_id, total_players)
     cur.execute("SELECT * FROM games WHERE id = ?", (game_id,))
     updated_game = cur.fetchone() or game
@@ -3160,6 +3311,7 @@ def promote_standby(
         "INSERT INTO rsvps (game_id, name, phone, status, late_eta, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (game_id, cleaned_name, standby_row["phone"], "IN", None, seat_number, now),
     )
+    upsert_invitee_profiles(conn, int(game["organizer_id"]), standby_row["phone"], cleaned_name)
     assign_seats_if_ready(conn, game_id, total_players)
     cur.execute("SELECT * FROM games WHERE id = ?", (game_id,))
     updated_game = cur.fetchone() or game
@@ -3474,6 +3626,7 @@ def rsvp_game(
     late_eta: str = Form(None),
     verification_code: str = Form(None),
     rsvp_token: str = Form(None),
+    invitee_token: str = Form(None),
     csrf_token: str = Form(...),
 ):
     status = status.upper().strip()
@@ -3521,6 +3674,7 @@ def rsvp_game(
     cleaned_eta = (late_eta or "").strip() or None
     cleaned_verification_code = (verification_code or "").strip()
     cleaned_token = normalize_rsvp_token(rsvp_token)
+    cleaned_invitee_token = normalize_invitee_token(invitee_token)
     now = datetime.utcnow().isoformat()
 
     if cleaned_phone and should_verify_phone(game) and not phone_is_verified(conn, game["id"], cleaned_phone):
@@ -3538,12 +3692,19 @@ def rsvp_game(
             return RedirectResponse(url=f"/g/{code}?verify=1&error=Invalid%20or%20expired%20verification%20code", status_code=302)
 
     existing = None
-    if cleaned_token:
+    if cleaned_phone:
         cur.execute(
-            "SELECT id, status, seat_number FROM rsvps WHERE game_id = ? AND rsvp_token = ?",
-            (game["id"], cleaned_token),
+            "SELECT id, status, seat_number FROM rsvps WHERE game_id = ? AND phone = ? ORDER BY id DESC LIMIT 1",
+            (game["id"], cleaned_phone),
         )
         existing = cur.fetchone()
+    if cleaned_token:
+        if not existing:
+            cur.execute(
+                "SELECT id, status, seat_number FROM rsvps WHERE game_id = ? AND rsvp_token = ?",
+                (game["id"], cleaned_token),
+            )
+            existing = cur.fetchone()
     if not existing:
         cur.execute(
             "SELECT id, status, seat_number FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?)",
@@ -3591,6 +3752,10 @@ def rsvp_game(
     seat_to_show = seat_row["seat_number"] if seat_row else None
     table_label, seat_in_table = seat_assignment(seat_to_show, game["total_players"], game_uses_multiple_tables(game))
     seat_label = seat_display(seat_to_show, game["total_players"], game_uses_multiple_tables(game))
+    issued_invitee_token = None
+    if cleaned_phone:
+        upsert_invitee_profiles(conn, int(game["organizer_id"]), cleaned_phone, cleaned_name)
+        issued_invitee_token = ensure_invitee_token_for_phone(conn, cleaned_phone, cleaned_invitee_token)
     maybe_send_choice_confirmation_sms(conn, game, cleaned_phone, status, cleaned_eta, seat_label)
     maybe_notify_organizer_when_out(conn, game, previous_status, status, cleaned_name)
     notify_seat_sms_when_full(conn, game)
@@ -3608,6 +3773,7 @@ def rsvp_game(
             "table_label": table_label,
             "seat_in_table": seat_in_table,
             "seat_label": seat_label,
+            "invitee_token": issued_invitee_token or cleaned_invitee_token,
         },
     )
 
@@ -3617,18 +3783,25 @@ def lookup_contact(
     request: Request,
     code: str,
     name: str = Form(None),
+    phone: str = Form(None),
     rsvp_token: str = Form(None),
+    invitee_token: str = Form(None),
     csrf_token: str = Form(...),
 ):
     if not verify_csrf(request, csrf_token):
         return PlainTextResponse("Bad CSRF token", status_code=400)
     cleaned_token = normalize_rsvp_token(rsvp_token)
+    cleaned_invitee_token = normalize_invitee_token(invitee_token)
+    try:
+        cleaned_phone = normalize_phone_10(phone)
+    except ValueError:
+        cleaned_phone = None
     cleaned_name = None
     if not cleaned_token:
         try:
             cleaned_name = clean_text(name, 50)
         except ValueError:
-            return {"phone": None, "name": None}
+            cleaned_name = None
 
     conn = get_db()
     cur = conn.cursor()
@@ -3636,23 +3809,37 @@ def lookup_contact(
     game = cur.fetchone()
     if not game or is_game_cancelled(game) or is_game_expired(game):
         conn.close()
-        return {"phone": None, "name": None}
+        return {"phone": None, "name": None, "invitee_token": cleaned_invitee_token}
 
-    if cleaned_token:
-        cur.execute(
-            "SELECT phone, name FROM rsvps WHERE game_id = ? AND rsvp_token = ? LIMIT 1",
-            (game["id"], cleaned_token),
-        )
-    else:
-        cur.execute(
-            "SELECT phone, name FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?) LIMIT 1",
-            (game["id"], cleaned_name),
-        )
-    row = cur.fetchone()
+    chosen_phone = cleaned_phone or lookup_phone_by_invitee_token(conn, cleaned_invitee_token)
+    profile_row = lookup_invitee_profile(conn, int(game["organizer_id"]), chosen_phone) if chosen_phone else None
+    row = None
+    if not profile_row:
+        if cleaned_token:
+            cur.execute(
+                "SELECT phone, name FROM rsvps WHERE game_id = ? AND rsvp_token = ? LIMIT 1",
+                (game["id"], cleaned_token),
+            )
+            row = cur.fetchone()
+        elif cleaned_name:
+            cur.execute(
+                "SELECT phone, name FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?) LIMIT 1",
+                (game["id"], cleaned_name),
+            )
+            row = cur.fetchone()
+
+    effective_phone = (profile_row["phone"] if profile_row else (row["phone"] if row and row["phone"] else chosen_phone))
+    effective_name = (profile_row["name"] if profile_row else (row["name"] if row and row["name"] else None))
+    issued_invitee_token = cleaned_invitee_token
+    if effective_phone:
+        upsert_invitee_profiles(conn, int(game["organizer_id"]), effective_phone, effective_name)
+        issued_invitee_token = ensure_invitee_token_for_phone(conn, effective_phone, cleaned_invitee_token)
+    conn.commit()
     conn.close()
     return {
-        "phone": (row["phone"] if row and row["phone"] else None),
-        "name": (row["name"] if row and row["name"] else None),
+        "phone": effective_phone,
+        "name": effective_name,
+        "invitee_token": issued_invitee_token,
     }
 
 
@@ -3663,6 +3850,7 @@ def standby_game(
     name: str = Form(...),
     phone: str = Form(None),
     verification_code: str = Form(None),
+    invitee_token: str = Form(None),
     csrf_token: str = Form(...),
 ):
     if not verify_csrf(request, csrf_token):
@@ -3694,6 +3882,7 @@ def standby_game(
         cleaned_phone = normalize_phone_10(phone)
     except ValueError:
         return RedirectResponse(url=f"/g/{code}?error=Invalid%20phone%20number", status_code=302)
+    cleaned_invitee_token = normalize_invitee_token(invitee_token)
     cleaned_verification_code = (verification_code or "").strip()
     if cleaned_phone and should_verify_phone(game) and not phone_is_verified(conn, game["id"], cleaned_phone):
         if not cleaned_verification_code:
@@ -3714,11 +3903,15 @@ def standby_game(
     )
     cur.execute("SELECT COUNT(*) AS c FROM standby WHERE game_id = ?", (game["id"],))
     position = int(cur.fetchone()["c"])
+    issued_invitee_token = None
+    if cleaned_phone:
+        upsert_invitee_profiles(conn, int(game["organizer_id"]), cleaned_phone, cleaned_name)
+        issued_invitee_token = ensure_invitee_token_for_phone(conn, cleaned_phone, cleaned_invitee_token)
     maybe_send_standby_confirmation_sms(conn, game, cleaned_phone, position)
     conn.commit()
     conn.close()
 
     return templates.TemplateResponse(
         "standby_thanks.html",
-        {"request": request, "game": game, "position": position},
+        {"request": request, "game": game, "position": position, "invitee_token": issued_invitee_token or cleaned_invitee_token},
     )

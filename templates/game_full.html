@@ -14,6 +14,7 @@
   </div>
   <form method="post" action="/g/{{ game['code'] }}/standby" id="standbyForm" class="grid grid-2">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="invitee_token" id="standbyInviteeToken" value="">
     <div class="standby-field">
       <label>Name</label>
       <input type="text" name="name" id="standbyName" required>
@@ -75,10 +76,54 @@
 (function() {
   const nameInput = document.getElementById('standbyName');
   const phoneInput = document.getElementById('standbyPhone');
+  const inviteeTokenInput = document.getElementById('standbyInviteeToken');
+  const csrfInput = document.querySelector('#standbyForm input[name="csrf_token"]');
   const savedName = localStorage.getItem('poker_name');
   const savedPhone = localStorage.getItem('poker_phone');
+  const inviteeTokenKey = 'poker_invitee_token';
+  let savedInviteeToken = localStorage.getItem(inviteeTokenKey);
+  if (!savedInviteeToken) {
+    savedInviteeToken = (Math.random().toString(36).slice(2) + Date.now().toString(36)).slice(0, 32);
+    localStorage.setItem(inviteeTokenKey, savedInviteeToken);
+  }
+  if (inviteeTokenInput) inviteeTokenInput.value = savedInviteeToken;
   if (savedName) nameInput.value = savedName;
   if (savedPhone && phoneInput) phoneInput.value = savedPhone;
+
+  async function syncContactFromServer(name) {
+    if (!csrfInput?.value) return;
+    try {
+      const body = new URLSearchParams();
+      body.set('name', name || '');
+      body.set('phone', (phoneInput?.value || '').trim());
+      body.set('invitee_token', savedInviteeToken || '');
+      body.set('csrf_token', csrfInput.value);
+      const response = await fetch('/g/{{ game["code"] }}/contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data && data.phone && phoneInput) {
+        phoneInput.value = data.phone;
+        localStorage.setItem('poker_phone', data.phone);
+      }
+      if (data && data.name && nameInput) {
+        nameInput.value = data.name;
+        localStorage.setItem('poker_name', data.name);
+      }
+      if (data && data.invitee_token) {
+        savedInviteeToken = data.invitee_token;
+        localStorage.setItem(inviteeTokenKey, data.invitee_token);
+        if (inviteeTokenInput) inviteeTokenInput.value = data.invitee_token;
+      }
+    } catch (e) {}
+  }
+
+  if (savedName || savedPhone) {
+    syncContactFromServer(savedName || '');
+  }
   updateStandbyPhoneVerifyBadge();
 })();
 
