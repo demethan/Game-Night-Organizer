@@ -69,7 +69,8 @@
   <button class="btn secondary invite-btn invite-btn-late" type="button" onclick="openLateModal()">LATE</button>
 </div>
 <div id="alreadyVoted" class="notice notice-strong" style="display:none;">
-  You already responded to this game. You can update your status above.
+  <div id="alreadyVotedText">You already responded to this game.</div>
+  <button type="button" class="btn secondary" id="changeStatusBtn" style="margin-top:8px;">Change my status</button>
 </div>
 
 <div class="card">
@@ -171,6 +172,19 @@ window._serverVerifiedPhone = window._serverVerifiedPhone || null;
   const inviteeTokenKey = 'poker_invitee_token';
   let savedToken = localStorage.getItem(tokenKey);
   let savedInviteeToken = localStorage.getItem(inviteeTokenKey);
+  const alreadyVotedBox = document.getElementById('alreadyVoted');
+  const alreadyVotedText = document.getElementById('alreadyVotedText');
+  const changeStatusBtn = document.getElementById('changeStatusBtn');
+  const rosterDetails = document.querySelector('.invite-details');
+
+  if (changeStatusBtn) {
+    changeStatusBtn.addEventListener('click', () => {
+      const actions = document.querySelector('.invite-actions-top');
+      if (actions) {
+        actions.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  }
 
   function createToken() {
     if (window.crypto && window.crypto.getRandomValues) {
@@ -227,6 +241,18 @@ window._serverVerifiedPhone = window._serverVerifiedPhone || null;
       }
       if (data && data.verified && data.phone) {
         window._serverVerifiedPhone = normalizeInvitePhone(data.phone);
+      }
+      const responseStatus = String(data?.response_status || '').toUpperCase();
+      if (alreadyVotedBox) {
+        const isKnownResponse = responseStatus === 'IN' || responseStatus === 'OUT' || responseStatus === 'LATE' || responseStatus === 'HOST';
+        alreadyVotedBox.style.display = isKnownResponse ? 'block' : 'none';
+        if (isKnownResponse && alreadyVotedText) {
+          const statusLabel = responseStatus === 'HOST' ? 'IN' : responseStatus;
+          alreadyVotedText.textContent = `Current status: ${statusLabel}.`;
+        }
+      }
+      if (rosterDetails && responseStatus) {
+        rosterDetails.open = true;
       }
       updateInviteVerifyBadge();
     } catch (e) {
@@ -464,13 +490,6 @@ function applyVerifyCode() {
       alert('Could not verify phone number.');
     });
 }
-
-(function() {
-  const key = 'poker_rsvp_{{ game["code"] }}';
-  if (localStorage.getItem(key)) {
-    document.getElementById('alreadyVoted').style.display = 'block';
-  }
-})();
 
 (function() {
   const verifyBtn = document.getElementById('verifyPhoneBtn');

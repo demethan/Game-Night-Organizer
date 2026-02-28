@@ -3830,6 +3830,49 @@ def lookup_contact(
 
     effective_phone = (profile_row["phone"] if profile_row else (row["phone"] if row and row["phone"] else chosen_phone))
     effective_name = (profile_row["name"] if profile_row else (row["name"] if row and row["name"] else None))
+    response_status = None
+    if effective_phone:
+        cur.execute(
+            """
+            SELECT status
+            FROM rsvps
+            WHERE game_id = ? AND phone = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(game["id"]), effective_phone),
+        )
+        status_row = cur.fetchone()
+        if status_row:
+            response_status = (status_row["status"] or "").upper() or None
+    elif cleaned_token:
+        cur.execute(
+            """
+            SELECT status
+            FROM rsvps
+            WHERE game_id = ? AND rsvp_token = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(game["id"]), cleaned_token),
+        )
+        status_row = cur.fetchone()
+        if status_row:
+            response_status = (status_row["status"] or "").upper() or None
+    elif effective_name:
+        cur.execute(
+            """
+            SELECT status
+            FROM rsvps
+            WHERE game_id = ? AND LOWER(name) = LOWER(?)
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(game["id"]), effective_name),
+        )
+        status_row = cur.fetchone()
+        if status_row:
+            response_status = (status_row["status"] or "").upper() or None
     issued_invitee_token = cleaned_invitee_token
     if effective_phone:
         upsert_invitee_profiles(conn, int(game["organizer_id"]), effective_phone, effective_name)
@@ -3842,6 +3885,7 @@ def lookup_contact(
         "name": effective_name,
         "invitee_token": issued_invitee_token,
         "verified": is_verified,
+        "response_status": response_status,
     }
 
 
