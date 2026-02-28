@@ -144,6 +144,7 @@
 {% endif %}
 
 <script>
+window._serverVerifiedPhone = window._serverVerifiedPhone || null;
 (function() {
   const flash = document.getElementById('inviteFlashError');
   if (!flash) return;
@@ -224,13 +225,17 @@
         localStorage.setItem(inviteeTokenKey, data.invitee_token);
         if (inviteeTokenInput) inviteeTokenInput.value = data.invitee_token;
       }
+      if (data && data.verified && data.phone) {
+        window._serverVerifiedPhone = normalizeInvitePhone(data.phone);
+      }
+      updateInviteVerifyBadge();
     } catch (e) {
       // Ignore network/transient errors.
     }
   }
 
-  if (savedName) {
-    syncContactFromServer(savedName);
+  if (savedName || savedPhone) {
+    syncContactFromServer(savedName || '');
   }
   updateInviteVerifyBadge();
 })();
@@ -280,7 +285,9 @@ function verifiedInvitePhoneKey() {
 }
 
 function isInvitePhoneVerified(normalizedPhone) {
-  return !!normalizedPhone && localStorage.getItem(verifiedInvitePhoneKey()) === normalizedPhone;
+  if (!normalizedPhone) return false;
+  if (localStorage.getItem(verifiedInvitePhoneKey()) === normalizedPhone) return true;
+  return window._serverVerifiedPhone === normalizedPhone;
 }
 
 function openMissingPhoneModal() {
@@ -349,15 +356,20 @@ async function sendVerifyCode() {
 function updateInviteVerifyBadge() {
   const badge = document.getElementById('phoneVerifyBadge');
   const phoneInput = document.getElementById('phone');
+  const verifyBtn = document.getElementById('verifyPhoneBtn');
   if (!badge || !phoneInput) return;
   const normalized = normalizeInvitePhone(phoneInput.value || '');
   if (!normalized) {
     badge.style.display = 'none';
     badge.textContent = '';
+    if (verifyBtn) verifyBtn.style.display = 'none';
     return;
   }
+  if (verifyBtn) verifyBtn.style.display = '';
   badge.style.display = 'inline-flex';
-  badge.textContent = isInvitePhoneVerified(normalized) ? '✓ Verified' : 'Not verified';
+  const verified = isInvitePhoneVerified(normalized);
+  badge.textContent = verified ? '✓ Verified' : 'Not verified';
+  if (verifyBtn) verifyBtn.style.display = verified ? 'none' : '';
 }
 
 function openLateModal() {

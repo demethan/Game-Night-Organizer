@@ -3835,11 +3835,13 @@ def lookup_contact(
         upsert_invitee_profiles(conn, int(game["organizer_id"]), effective_phone, effective_name)
         issued_invitee_token = ensure_invitee_token_for_phone(conn, effective_phone, cleaned_invitee_token)
     conn.commit()
+    is_verified = bool(effective_phone and should_verify_phone(game) and phone_is_verified(conn, int(game["id"]), effective_phone))
     conn.close()
     return {
         "phone": effective_phone,
         "name": effective_name,
         "invitee_token": issued_invitee_token,
+        "verified": is_verified,
     }
 
 

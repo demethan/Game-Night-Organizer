@@ -59,6 +59,7 @@
 {% endif %}
 
 <script>
+window._standbyServerVerifiedPhone = window._standbyServerVerifiedPhone || null;
 (function() {
   const flash = document.getElementById('inviteFullFlashError');
   if (!flash) return;
@@ -118,6 +119,10 @@
         localStorage.setItem(inviteeTokenKey, data.invitee_token);
         if (inviteeTokenInput) inviteeTokenInput.value = data.invitee_token;
       }
+      if (data && data.verified && data.phone) {
+        window._standbyServerVerifiedPhone = normalizeStandbyPhone(data.phone);
+      }
+      updateStandbyPhoneVerifyBadge();
     } catch (e) {}
   }
 
@@ -187,21 +192,28 @@ function standbyVerifiedPhoneKey() {
 }
 
 function isStandbyPhoneVerified(normalizedPhone) {
-  return !!normalizedPhone && localStorage.getItem(standbyVerifiedPhoneKey()) === normalizedPhone;
+  if (!normalizedPhone) return false;
+  if (localStorage.getItem(standbyVerifiedPhoneKey()) === normalizedPhone) return true;
+  return window._standbyServerVerifiedPhone === normalizedPhone;
 }
 
 function updateStandbyPhoneVerifyBadge() {
   const verifyBadge = document.getElementById('standbyPhoneVerifyBadge');
   const phoneInput = document.getElementById('standbyPhone');
+  const verifyBtn = document.getElementById('standbyVerifyPhoneBtn');
   if (!verifyBadge || !phoneInput) return;
   const normalized = normalizeStandbyPhone(phoneInput.value || '');
   if (!normalized) {
     verifyBadge.style.display = 'none';
     verifyBadge.textContent = '';
+    if (verifyBtn) verifyBtn.style.display = 'none';
     return;
   }
+  if (verifyBtn) verifyBtn.style.display = '';
   verifyBadge.style.display = 'inline-flex';
-  verifyBadge.textContent = isStandbyPhoneVerified(normalized) ? '✓ Verified' : 'Not verified';
+  const verified = isStandbyPhoneVerified(normalized);
+  verifyBadge.textContent = verified ? '✓ Verified' : 'Not verified';
+  if (verifyBtn) verifyBtn.style.display = verified ? 'none' : '';
 }
 
 function openStandbyMissingPhoneModal() {
