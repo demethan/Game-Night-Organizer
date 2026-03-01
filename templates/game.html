@@ -7,6 +7,25 @@
 {% endblock %}
 {% block content %}
 <style>
+.invite-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.invite-info-inline {
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.invite-info-inline:hover {
+  color: #e2e8f0;
+}
 @media (max-width: 640px) {
   .topbar {
     display: none;
@@ -70,7 +89,6 @@
 </div>
 <div id="alreadyVoted" class="notice notice-strong" style="display:none;">
   <div id="alreadyVotedText">You already responded to this game.</div>
-  <button type="button" class="btn secondary" id="changeStatusBtn" style="margin-top:8px;">Change my status</button>
 </div>
 
 <div class="card">
@@ -85,7 +103,7 @@
     <div>
       <div class="invite-label-row">
         <label style="margin:0;">Name</label>
-        <button type="button" class="info-btn info-btn-inline" onclick="toggleInfo()" aria-label="Info">ℹ️</button>
+        <button type="button" class="invite-info-inline" onclick="toggleInfo()" aria-label="Info">ℹ️</button>
       </div>
       <input type="text" name="name" id="name" autocomplete="name" placeholder="Your name" required>
     </div>
@@ -146,6 +164,7 @@
 
 <script>
 window._serverVerifiedPhone = window._serverVerifiedPhone || null;
+window._verifySendCooldownUntil = window._verifySendCooldownUntil || 0;
 (function() {
   const flash = document.getElementById('inviteFlashError');
   if (!flash) return;
@@ -174,17 +193,8 @@ window._serverVerifiedPhone = window._serverVerifiedPhone || null;
   let savedInviteeToken = localStorage.getItem(inviteeTokenKey);
   const alreadyVotedBox = document.getElementById('alreadyVoted');
   const alreadyVotedText = document.getElementById('alreadyVotedText');
-  const changeStatusBtn = document.getElementById('changeStatusBtn');
+  const inviteActions = document.querySelector('.invite-actions-top');
   const rosterDetails = document.querySelector('.invite-details');
-
-  if (changeStatusBtn) {
-    changeStatusBtn.addEventListener('click', () => {
-      const actions = document.querySelector('.invite-actions-top');
-      if (actions) {
-        actions.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    });
-  }
 
   function createToken() {
     if (window.crypto && window.crypto.getRandomValues) {
@@ -246,9 +256,10 @@ window._serverVerifiedPhone = window._serverVerifiedPhone || null;
       if (alreadyVotedBox) {
         const isKnownResponse = responseStatus === 'IN' || responseStatus === 'OUT' || responseStatus === 'LATE' || responseStatus === 'HOST';
         alreadyVotedBox.style.display = isKnownResponse ? 'block' : 'none';
+        if (inviteActions) inviteActions.style.display = isKnownResponse ? 'none' : '';
         if (isKnownResponse && alreadyVotedText) {
           const statusLabel = responseStatus === 'HOST' ? 'IN' : responseStatus;
-          alreadyVotedText.textContent = `Current status: ${statusLabel}.`;
+          alreadyVotedText.textContent = `Current status: ${statusLabel}. RSVP already completed.`;
         }
       }
       if (rosterDetails && responseStatus) {
@@ -338,6 +349,31 @@ function skipPhoneAndContinue() {
   submitStatus(window._pendingStatus || 'IN', true);
 }
 
+function maskPhoneForUi(value) {
+  const digits = normalizeInvitePhone(value || '');
+  if (!digits) return '';
+  return `+1 ***-***-${digits.slice(-4)}`;
+}
+
+function startVerifySendCooldown(seconds) {
+  const sendBtn = document.querySelector('#verifyModal button.btn.secondary[onclick=\"sendVerifyCode()\"]');
+  if (!sendBtn) return;
+  window._verifySendCooldownUntil = Date.now() + (seconds * 1000);
+  const tick = () => {
+    const leftMs = window._verifySendCooldownUntil - Date.now();
+    if (leftMs <= 0) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send Code';
+      return;
+    }
+    const left = Math.ceil(leftMs / 1000);
+    sendBtn.disabled = true;
+    sendBtn.textContent = `Send Code (${left}s)`;
+    setTimeout(tick, 250);
+  };
+  tick();
+}
+
 async function sendVerifyCode() {
   const phoneInput = document.getElementById('phone');
   const phone = (phoneInput?.value || '').trim();
@@ -366,9 +402,11 @@ async function sendVerifyCode() {
     if (data.already_verified) {
       localStorage.setItem(verifiedInvitePhoneKey(), normalized);
       updateInviteVerifyBadge();
+      if (verifyMessage) verifyMessage.textContent = `Phone ${maskPhoneForUi(phone)} is already verified.`;
       return 'verified';
     }
-    if (verifyMessage) verifyMessage.textContent = 'Enter the 6-digit code sent by text.';
+    if (verifyMessage) verifyMessage.textContent = `Code sent to ${maskPhoneForUi(phone)}. Enter the 6-digit code sent by text.`;
+    startVerifySendCooldown(30);
     openVerifyModal();
     return 'started';
   } catch (e) {
@@ -388,14 +426,20 @@ function updateInviteVerifyBadge() {
   if (!normalized) {
     badge.style.display = 'none';
     badge.textContent = '';
-    if (verifyBtn) verifyBtn.style.display = 'none';
+    if (verifyBtn) {
+      verifyBtn.style.display = '';
+      verifyBtn.disabled = true;
+    }
     return;
   }
   if (verifyBtn) verifyBtn.style.display = '';
   badge.style.display = 'inline-flex';
   const verified = isInvitePhoneVerified(normalized);
   badge.textContent = verified ? '✓ Verified' : 'Not verified';
-  if (verifyBtn) verifyBtn.style.display = verified ? 'none' : '';
+  if (verifyBtn) {
+    verifyBtn.style.display = verified ? 'none' : '';
+    verifyBtn.disabled = verified;
+  }
 }
 
 function openLateModal() {

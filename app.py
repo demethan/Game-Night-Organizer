@@ -1800,6 +1800,36 @@ def host_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
     return payload
 
 
+def invitee_roster_payload(conn: sqlite3.Connection, game_row) -> list:
+    game_id = int(game_row["id"])
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, name, status, late_eta, seat_number, created_at
+        FROM rsvps
+        WHERE game_id = ? AND status IN ('HOST', 'IN', 'LATE')
+        ORDER BY
+            CASE WHEN seat_number IS NULL THEN 1 ELSE 0 END,
+            seat_number ASC,
+            datetime(created_at) ASC, id ASC
+        """,
+        (game_id,),
+    )
+    rows = []
+    for row in cur.fetchall():
+        rows.append(
+            {
+                "id": int(row["id"]),
+                "name": row["name"],
+                "status": row["status"],
+                "late_eta": row["late_eta"] or "",
+                "seat_number": row["seat_number"],
+                "seat_label": seat_display(row["seat_number"], game_row["total_players"], game_uses_multiple_tables(game_row)) or "-",
+            }
+        )
+    return rows
+
+
 def twiml_message(text: str) -> str:
     safe = xml_escape(text or "")
     return f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
@@ -3456,6 +3486,7 @@ def game_by_code(request: Request, code: str):
     late_players = [row["name"] for row in cur.fetchall()]
     cur.execute("SELECT COUNT(*) AS c FROM rsvps WHERE game_id = ? AND status = 'OUT'", (game["id"],))
     out_count = int(cur.fetchone()["c"])
+    roster_players = invitee_roster_payload(conn, game)
     conn.close()
 
     if in_count >= game["total_players"]:
@@ -3467,6 +3498,7 @@ def game_by_code(request: Request, code: str):
                 "title": "RSVP Here",
                 "verify_required": request.query_params.get("verify") == "1",
                 "twilio_enabled": should_verify_phone(game),
+                "roster_players": roster_players,
             },
         )
 
@@ -3481,6 +3513,7 @@ def game_by_code(request: Request, code: str):
             "late_players": late_players,
             "host_name": host_name,
             "out_count": out_count,
+            "roster_players": roster_players,
             "verify_required": request.query_params.get("verify") == "1",
             "twilio_enabled": should_verify_phone(game),
         },
@@ -3657,10 +3690,17 @@ def rsvp_game(
     # If IN/LATE and full, show full page
     if status in {"IN", "LATE"}:
         if count_in(conn, game["id"]) >= game["total_players"]:
+            roster_players = invitee_roster_payload(conn, game)
             conn.close()
             return templates.TemplateResponse(
                 "game_full.html",
-                {"request": request, "game": game, "verify_required": False, "twilio_enabled": should_verify_phone(game)},
+                {
+                    "request": request,
+                    "game": game,
+                    "verify_required": False,
+                    "twilio_enabled": should_verify_phone(game),
+                    "roster_players": roster_players,
+                },
             )
 
     try:
@@ -3811,7 +3851,8 @@ def lookup_contact(
         conn.close()
         return {"phone": None, "name": None, "invitee_token": cleaned_invitee_token}
 
-    chosen_phone = cleaned_phone or lookup_phone_by_invitee_token(conn, cleaned_invitee_token)
+    token_phone = lookup_phone_by_invitee_token(conn, cleaned_invitee_token)
+    chosen_phone = token_phone or cleaned_phone
     profile_row = lookup_invitee_profile(conn, int(game["organizer_id"]), chosen_phone) if chosen_phone else None
     row = None
     if not profile_row:
@@ -3831,10 +3872,14 @@ def lookup_contact(
     effective_phone = (profile_row["phone"] if profile_row else (row["phone"] if row and row["phone"] else chosen_phone))
     effective_name = (profile_row["name"] if profile_row else (row["name"] if row and row["name"] else None))
     response_status = None
+    response_rsvp_id = None
+    response_seat_label = None
+
+    status_row = None
     if effective_phone:
         cur.execute(
             """
-            SELECT status
+            SELECT id, status, seat_number
             FROM rsvps
             WHERE game_id = ? AND phone = ?
             ORDER BY id DESC
@@ -3843,12 +3888,10 @@ def lookup_contact(
             (int(game["id"]), effective_phone),
         )
         status_row = cur.fetchone()
-        if status_row:
-            response_status = (status_row["status"] or "").upper() or None
-    elif cleaned_token:
+    if not status_row and cleaned_token:
         cur.execute(
             """
-            SELECT status
+            SELECT id, status, seat_number
             FROM rsvps
             WHERE game_id = ? AND rsvp_token = ?
             ORDER BY id DESC
@@ -3857,12 +3900,10 @@ def lookup_contact(
             (int(game["id"]), cleaned_token),
         )
         status_row = cur.fetchone()
-        if status_row:
-            response_status = (status_row["status"] or "").upper() or None
-    elif effective_name:
+    if not status_row and effective_name:
         cur.execute(
             """
-            SELECT status
+            SELECT id, status, seat_number
             FROM rsvps
             WHERE game_id = ? AND LOWER(name) = LOWER(?)
             ORDER BY id DESC
@@ -3871,8 +3912,10 @@ def lookup_contact(
             (int(game["id"]), effective_name),
         )
         status_row = cur.fetchone()
-        if status_row:
-            response_status = (status_row["status"] or "").upper() or None
+    if status_row:
+        response_status = (status_row["status"] or "").upper() or None
+        response_rsvp_id = int(status_row["id"])
+        response_seat_label = seat_display(status_row["seat_number"], game["total_players"], game_uses_multiple_tables(game))
     issued_invitee_token = cleaned_invitee_token
     if effective_phone:
         upsert_invitee_profiles(conn, int(game["organizer_id"]), effective_phone, effective_name)
@@ -3886,6 +3929,8 @@ def lookup_contact(
         "invitee_token": issued_invitee_token,
         "verified": is_verified,
         "response_status": response_status,
+        "response_rsvp_id": response_rsvp_id,
+        "response_seat_label": response_seat_label,
     }
 
 

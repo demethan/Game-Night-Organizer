@@ -29,7 +29,7 @@
     <button type="button" id="openDetailsModal" class="btn secondary action-pill">Change</button>
   </span>
 </p>
-<div class="row organizer-actions">
+<div class="row organizer-actions organizer-actions-buttons">
   <button class="btn secondary copy-btn invite-link-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
   <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
   <button class="btn secondary" type="button" id="openBroadcastModal">Send Announcement</button>
@@ -37,10 +37,11 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['sms_enabled'] %}Disable SMS{% else %}Enable SMS{% endif %}</button>
   </form>
-  <span class="badge invite-link-badge">Invite Link: /game?g={{ game['code'] }}</span>
+  <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
+</div>
+<div class="row organizer-actions organizer-actions-badges">
   <span class="badge" id="playersInBadge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
   <span class="badge">SMS: {% if game['sms_enabled'] %}ON{% else %}OFF{% endif %}</span>
-  <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
   {% if game['is_cancelled'] %}<span class="badge">Status: Cancelled</span>{% endif %}
 </div>
 <div id="broadcastModal" class="modal" style="display:none;">
@@ -469,6 +470,7 @@
         const show = !value || status === value || (value === 'IN' && status === 'HOST');
         tr.style.display = show ? '' : 'none';
       });
+      applyTableDividers();
       if (value) {
         activeFilterValue.textContent = value;
         activeFilter.style.display = 'inline-flex';
@@ -523,11 +525,36 @@
       rows.forEach(r => tbody.appendChild(r));
     }
 
+    function tableGroupFromSeatLabel(label) {
+      const text = String(label || '').trim();
+      if (!text || text === '-') return '';
+      const match = text.match(/^([A-Za-z]+)/);
+      if (!match) return '';
+      return match[1].toUpperCase();
+    }
+
+    function applyTableDividers() {
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      let lastGroup = '';
+      rows.forEach((row) => {
+        row.style.borderTop = '';
+        if (row.style.display === 'none') return;
+        const seatCell = row.querySelector('[data-label="Seat"]');
+        const group = tableGroupFromSeatLabel(seatCell ? seatCell.textContent : '');
+        if (!group) return;
+        if (lastGroup && group !== lastGroup) {
+          row.style.borderTop = '2px solid rgba(148, 163, 184, 0.45)';
+        }
+        lastGroup = group;
+      });
+    }
+
     function applySort() {
       if (currentSort === 'name') sortByName();
       else if (currentSort === 'time') sortByTime();
       else if (currentSort === 'seat') sortBySeat();
       else sortByStatus();
+      applyTableDividers();
     }
 
     function renderRows(rsvps) {

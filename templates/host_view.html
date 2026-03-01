@@ -49,6 +49,29 @@
         .replace(/'/g, '&#39;');
     }
 
+    function tableGroupFromSeatLabel(label) {
+      const text = String(label || '').trim();
+      if (!text || text === '-') return '';
+      const match = text.match(/^([A-Za-z]+)/);
+      if (!match) return '';
+      return match[1].toUpperCase();
+    }
+
+    function applyTableDividers() {
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      let lastGroup = '';
+      rows.forEach((row) => {
+        row.style.borderTop = '';
+        const seatCell = row.querySelector('[data-label="Seat"]');
+        const group = tableGroupFromSeatLabel(seatCell ? seatCell.textContent : '');
+        if (!group) return;
+        if (lastGroup && group !== lastGroup) {
+          row.style.borderTop = '2px solid rgba(148, 163, 184, 0.45)';
+        }
+        lastGroup = group;
+      });
+    }
+
     function renderRows(players) {
       const html = (players || []).map(p => {
         const seatNumber = p.seat_number == null ? '' : String(p.seat_number);
@@ -62,6 +85,7 @@
         </tr>`;
       }).join('');
       tbody.innerHTML = html;
+      applyTableDividers();
     }
 
     async function refresh() {
@@ -78,6 +102,7 @@
     }
 
     setInterval(refresh, 5000);
+    applyTableDividers();
     refresh();
   })();
 </script>

@@ -5,8 +5,32 @@
   <div class="error" id="inviteFullFlashError">{{ request.query_params.get("error") }}</div>
 {% endif %}
 <p>{{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }} • {{ game['location'] }}</p>
-<div class="card">
-  <h2>GAME FULL</h2>
+<div class="card" id="inGameCard" style="display:none;">
+  <h2>You Are In This Game</h2>
+  <p><strong id="mySeatLine">You are Seat <span id="mySeatLabel">pending</span></strong></p>
+  {% if roster_players and roster_players|length > 0 %}
+  <table style="margin-top:10px;">
+    <thead>
+      <tr>
+        <th>Player</th>
+        <th>Status</th>
+        <th>Seat</th>
+      </tr>
+    </thead>
+    <tbody id="inGameRosterBody">
+      {% for p in roster_players %}
+      <tr data-rsvp-id="{{ p['id'] }}">
+        <td>{{ p['name'] }}</td>
+        <td>{{ p['status'] }}</td>
+        <td>{{ p['seat_label'] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+<div class="card" id="standbyCard">
+  <h2 id="gameFullTitle">GAME FULL</h2>
   <p id="standbyIntro">You can join the standby list.</p>
   <div id="alreadyStandby" class="notice notice-strong" style="display:none;">
     You are already on the standby list for this game.
@@ -60,6 +84,7 @@
 
 <script>
 window._standbyServerVerifiedPhone = window._standbyServerVerifiedPhone || null;
+window._standbyVerifySendCooldownUntil = window._standbyVerifySendCooldownUntil || 0;
 (function() {
   const flash = document.getElementById('inviteFullFlashError');
   if (!flash) return;
@@ -122,13 +147,13 @@ window._standbyServerVerifiedPhone = window._standbyServerVerifiedPhone || null;
       if (data && data.verified && data.phone) {
         window._standbyServerVerifiedPhone = normalizeStandbyPhone(data.phone);
       }
+      const responseStatus = String(data?.response_status || '').toUpperCase();
+      applyInviteeResponseState(responseStatus, data?.response_seat_label || '', data?.response_rsvp_id || '');
       updateStandbyPhoneVerifyBadge();
     } catch (e) {}
   }
 
-  if (savedName || savedPhone) {
-    syncContactFromServer(savedName || '');
-  }
+  syncContactFromServer(savedName || '');
   updateStandbyPhoneVerifyBadge();
 })();
 
@@ -156,6 +181,7 @@ document.getElementById('standbyForm').addEventListener('submit', async function
 (function() {
   const key = 'poker_standby_{{ game["code"] }}';
   const posKey = 'poker_standby_pos_{{ game["code"] }}';
+  if (window._inviteeInGame) return;
   if (localStorage.getItem(key)) {
     document.getElementById('alreadyStandby').style.display = 'block';
     const intro = document.getElementById('standbyIntro');
@@ -169,6 +195,61 @@ document.getElementById('standbyForm').addEventListener('submit', async function
     });
   }
 })();
+
+function applyInviteeResponseState(status, seatLabel, rsvpId) {
+  const normalized = String(status || '').toUpperCase();
+  const inGame = normalized === 'IN' || normalized === 'LATE' || normalized === 'HOST';
+  window._inviteeInGame = inGame;
+  const inGameCard = document.getElementById('inGameCard');
+  const standbyCard = document.getElementById('standbyCard');
+  const mySeatLabel = document.getElementById('mySeatLabel');
+  const mySeatLine = document.getElementById('mySeatLine');
+  const rosterBody = document.getElementById('inGameRosterBody');
+  if (inGameCard) inGameCard.style.display = inGame ? 'block' : 'none';
+  if (standbyCard) standbyCard.style.display = inGame ? 'none' : 'block';
+  if (mySeatLabel) {
+    mySeatLabel.textContent = String(seatLabel || '').trim() || 'pending';
+  }
+  if (mySeatLine) mySeatLine.style.display = inGame ? 'block' : 'none';
+  if (rosterBody) {
+    const currentId = String(rsvpId || '');
+    Array.from(rosterBody.querySelectorAll('tr')).forEach((row) => {
+      const isCurrent = currentId && row.getAttribute('data-rsvp-id') === currentId;
+      row.style.background = isCurrent ? 'rgba(34,197,94,0.18)' : '';
+      row.style.outline = isCurrent ? '2px solid rgba(34,197,94,0.5)' : '';
+      row.style.fontWeight = isCurrent ? '700' : '';
+    });
+    applyInviteeTableDividers();
+  }
+}
+
+function inviteeTableGroupFromSeatLabel(label) {
+  const text = String(label || '').trim();
+  if (!text || text === '-') return '';
+  const match = text.match(/^([A-Za-z]+)/);
+  if (!match) return '';
+  return match[1].toUpperCase();
+}
+
+function applyInviteeTableDividers() {
+  const rosterBody = document.getElementById('inGameRosterBody');
+  if (!rosterBody) return;
+  Array.from(rosterBody.querySelectorAll('tr.invitee-table-separator')).forEach((row) => row.remove());
+  const rows = Array.from(rosterBody.querySelectorAll('tr[data-rsvp-id]'));
+  let lastGroup = '';
+  rows.forEach((row) => {
+    const seatCell = row.querySelector('td:last-child');
+    const group = inviteeTableGroupFromSeatLabel(seatCell ? seatCell.textContent : '');
+    if (!group) return;
+    if (lastGroup && group !== lastGroup) {
+      const sep = document.createElement('tr');
+      sep.className = 'invitee-table-separator';
+      sep.innerHTML = '<td colspan="3" style="padding:6px 0 0 0; border-bottom:2px solid rgba(148, 163, 184, 0.55);"></td>';
+      rosterBody.insertBefore(sep, row);
+    }
+    lastGroup = group;
+  });
+}
 
 function openStandbyVerifyModal() {
   const modal = document.getElementById('standbyVerifyModal');
@@ -206,14 +287,20 @@ function updateStandbyPhoneVerifyBadge() {
   if (!normalized) {
     verifyBadge.style.display = 'none';
     verifyBadge.textContent = '';
-    if (verifyBtn) verifyBtn.style.display = 'none';
+    if (verifyBtn) {
+      verifyBtn.style.display = '';
+      verifyBtn.disabled = true;
+    }
     return;
   }
   if (verifyBtn) verifyBtn.style.display = '';
   verifyBadge.style.display = 'inline-flex';
   const verified = isStandbyPhoneVerified(normalized);
   verifyBadge.textContent = verified ? '✓ Verified' : 'Not verified';
-  if (verifyBtn) verifyBtn.style.display = verified ? 'none' : '';
+  if (verifyBtn) {
+    verifyBtn.style.display = verified ? 'none' : '';
+    verifyBtn.disabled = verified;
+  }
 }
 
 function openStandbyMissingPhoneModal() {
@@ -236,6 +323,31 @@ function skipStandbyPhoneAndContinue() {
   closeStandbyMissingPhoneModal();
   window._skipStandbyPhonePrompt = true;
   document.getElementById('standbyForm').requestSubmit();
+}
+
+function maskStandbyPhoneForUi(value) {
+  const digits = normalizeStandbyPhone(value || '');
+  if (!digits) return '';
+  return `+1 ***-***-${digits.slice(-4)}`;
+}
+
+function startStandbyVerifySendCooldown(seconds) {
+  const sendBtn = document.querySelector('#standbyVerifyModal button.btn.secondary[onclick=\"sendStandbyVerifyCode()\"]');
+  if (!sendBtn) return;
+  window._standbyVerifySendCooldownUntil = Date.now() + (seconds * 1000);
+  const tick = () => {
+    const leftMs = window._standbyVerifySendCooldownUntil - Date.now();
+    if (leftMs <= 0) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send Code';
+      return;
+    }
+    const left = Math.ceil(leftMs / 1000);
+    sendBtn.disabled = true;
+    sendBtn.textContent = `Send Code (${left}s)`;
+    setTimeout(tick, 250);
+  };
+  tick();
 }
 
 async function sendStandbyVerifyCode() {
@@ -266,9 +378,11 @@ async function sendStandbyVerifyCode() {
     if (data.already_verified) {
       localStorage.setItem(standbyVerifiedPhoneKey(), normalized);
       updateStandbyPhoneVerifyBadge();
+      if (verifyMessage) verifyMessage.textContent = `Phone ${maskStandbyPhoneForUi(phone)} is already verified.`;
       return 'verified';
     }
-    if (verifyMessage) verifyMessage.textContent = 'Enter the 6-digit code sent by text.';
+    if (verifyMessage) verifyMessage.textContent = `Code sent to ${maskStandbyPhoneForUi(phone)}. Enter the 6-digit code sent by text.`;
+    startStandbyVerifySendCooldown(30);
     openStandbyVerifyModal();
     return 'started';
   } catch (e) {
