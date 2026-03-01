@@ -44,7 +44,7 @@
             <button class="btn" type="submit">Reset Password</button>
           </form>
           {% if not u['is_admin'] %}
-          <form method="post" action="/admin/users/{{ u['id'] }}/delete" onsubmit="return confirm('Delete this user and all their games?');">
+          <form method="post" action="/admin/users/{{ u['id'] }}/delete" class="confirm-delete-user">
             <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
             <button class="btn danger" type="submit">Delete</button>
           </form>
@@ -55,4 +55,14 @@
   {% endfor %}
   </tbody>
 </table>
+<script nonce="{{ csp_nonce(request) }}">
+  (function() {
+    const forms = document.querySelectorAll('form.confirm-delete-user');
+    forms.forEach(form => {
+      form.addEventListener('submit', (e) => {
+        if (!window.confirm('Delete this user and all their games?')) e.preventDefault();
+      });
+    });
+  })();
+</script>
 {% endblock %}

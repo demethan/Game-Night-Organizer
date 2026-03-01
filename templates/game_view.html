@@ -4,7 +4,7 @@
 <div class="organizer-titlebar">
   <h1 class="game-title">{{ game['title'] }}</h1>
   {% if is_owner %}
-  <form method="post" action="/games/{{ game['id'] }}/cancel" onsubmit="return confirm('{% if game['is_cancelled'] %}Reopen this game? This also cancels any pending cancellation SMS and invitees will be able to RSVP again.{% else %}Are you sure? Cancelling will schedule SMS to all players/standby in 2 minutes. Reopen within 2 minutes to stop those texts.{% endif %}');">
+  <form method="post" action="/games/{{ game['id'] }}/cancel" id="cancelGameForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="cancel-toggle{% if game['is_cancelled'] %} is-on{% endif %}" type="submit" aria-pressed="{% if game['is_cancelled'] %}true{% else %}false{% endif %}">
       <span class="cancel-toggle-track" aria-hidden="true">
@@ -30,10 +30,10 @@
   </span>
 </p>
 <div class="row organizer-actions organizer-actions-buttons">
-  <button class="btn secondary copy-btn invite-link-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
+  <button class="btn secondary copy-btn invite-link-btn" type="button" data-link="{{ public_base_url(request) }}/game?g={{ game['code'] }}">Copy Invite Link</button>
   <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
   <button class="btn secondary" type="button" id="openBroadcastModal">Send Announcement</button>
-  <form method="post" action="/games/{{ game['id'] }}/sms-toggle" onsubmit="return confirm('{% if game['sms_enabled'] %}Disable all outbound SMS for this game?{% else %}Enable outbound SMS for this game?{% endif %}');">
+  <form method="post" action="/games/{{ game['id'] }}/sms-toggle" id="smsToggleForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['sms_enabled'] %}Disable SMS{% else %}Enable SMS{% endif %}</button>
   </form>
@@ -208,15 +208,24 @@
 <div id="addPlayerModal" class="modal" style="display:none;">
   <div class="modal-card">
     <h3>Add Player</h3>
-    <form method="post" action="/games/{{ game['id'] }}/rsvp/add" class="grid">
+    <form method="post" action="/games/{{ game['id'] }}/rsvp/add" class="grid" id="addPlayerForm">
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <div>
+        <label>Pick Existing Invitee</label>
+        <select id="addPlayerExistingInvitee">
+          <option value="">-- Select an invitee --</option>
+          {% for i in invitee_directory %}
+          <option value="{{ loop.index0 }}" data-name="{{ i['name'] }}" data-phone="{{ i['phone'] }}">{{ i['name'] }}{% if i['phone'] %} ({{ i['phone'] | fmt_phone }}){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
         <label>Name</label>
-        <input type="text" name="name" placeholder="Name" required>
+        <input type="text" name="name" id="addPlayerName" placeholder="Name" required>
       </div>
       <div>
         <label>Cell</label>
-        <input type="tel" name="phone" placeholder="+1 (807) 555-1234">
+        <input type="tel" name="phone" id="addPlayerPhone" placeholder="+1 (807) 555-1234">
       </div>
       <div>
         <label>Status</label>
@@ -302,7 +311,7 @@
 
 <link rel="stylesheet" href="/static/flatpickr.min.css">
 <script src="/static/flatpickr.min.js"></script>
-<script>
+<script nonce="{{ csp_nonce(request) }}">
   (function() {
     const flash = document.getElementById('flashSuccess');
     if (flash) {
@@ -331,6 +340,8 @@
     const sortSeatBtn = document.getElementById('sortSeat');
     const detailsModal = document.getElementById('detailsModal');
     const broadcastModal = document.getElementById('broadcastModal');
+    const cancelGameForm = document.getElementById('cancelGameForm');
+    const smsToggleForm = document.getElementById('smsToggleForm');
     const openDetailsModalBtn = document.getElementById('openDetailsModal');
     const openBroadcastModalBtn = document.getElementById('openBroadcastModal');
     const closeBroadcastModalBtn = document.getElementById('closeBroadcastModal');
@@ -338,6 +349,10 @@
     const addPlayerModal = document.getElementById('addPlayerModal');
     const openAddPlayerModalBtn = document.getElementById('openAddPlayerModal');
     const closeAddPlayerModalBtn = document.getElementById('closeAddPlayerModal');
+    const addPlayerForm = document.getElementById('addPlayerForm');
+    const addPlayerExistingInvitee = document.getElementById('addPlayerExistingInvitee');
+    const addPlayerName = document.getElementById('addPlayerName');
+    const addPlayerPhone = document.getElementById('addPlayerPhone');
     const detailsForm = document.getElementById('gameDetailsForm');
     const broadcastForm = broadcastModal ? broadcastModal.querySelector('form') : null;
     const broadcastMessage = document.getElementById('broadcastMessage');
@@ -606,7 +621,7 @@
     }
 
     function inviteText(seatLabel) {
-      const link = "https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}";
+      const link = "{{ public_base_url(request) }}/game?g={{ game['code'] }}";
       const seatLine = seatLabel ? `\nSeat: ${seatLabel}` : '';
       const title = {{ game['title'] | tojson }};
       const location = {{ game['location'] | tojson }};
@@ -716,6 +731,14 @@
       e.preventDefault();
       if (detailsModal) detailsModal.style.display = 'flex';
     });
+    cancelGameForm && cancelGameForm.addEventListener('submit', (e) => {
+      const msg = {{ ("Reopen this game? This also cancels any pending cancellation SMS and invitees will be able to RSVP again." if game['is_cancelled'] else "Are you sure? Cancelling will schedule SMS to all players/standby in 2 minutes. Reopen within 2 minutes to stop those texts.") | tojson }};
+      if (!window.confirm(msg)) e.preventDefault();
+    });
+    smsToggleForm && smsToggleForm.addEventListener('submit', (e) => {
+      const msg = {{ ("Disable all outbound SMS for this game?" if game['sms_enabled'] else "Enable outbound SMS for this game?") | tojson }};
+      if (!window.confirm(msg)) e.preventDefault();
+    });
     openBroadcastModalBtn && openBroadcastModalBtn.addEventListener('click', (e) => {
       e.preventDefault();
       if (broadcastModal) broadcastModal.style.display = 'flex';
@@ -739,12 +762,35 @@
     openAddPlayerModalBtn && openAddPlayerModalBtn.addEventListener('click', (e) => {
       e.preventDefault();
       if (addPlayerModal) addPlayerModal.style.display = 'flex';
+      if (addPlayerExistingInvitee) addPlayerExistingInvitee.value = '';
+      if (addPlayerName) addPlayerName.value = '';
+      if (addPlayerPhone) addPlayerPhone.value = '';
+    });
+    addPlayerExistingInvitee && addPlayerExistingInvitee.addEventListener('change', () => {
+      const opt = addPlayerExistingInvitee.options[addPlayerExistingInvitee.selectedIndex];
+      if (!opt) return;
+      const selectedName = (opt.getAttribute('data-name') || '').trim();
+      const selectedPhone = (opt.getAttribute('data-phone') || '').trim();
+      if (selectedName && addPlayerName) addPlayerName.value = selectedName;
+      if (addPlayerPhone) addPlayerPhone.value = selectedPhone;
+    });
+    addPlayerForm && addPlayerForm.addEventListener('submit', () => {
+      if (addPlayerName) addPlayerName.value = (addPlayerName.value || '').trim();
+      if (addPlayerPhone) addPlayerPhone.value = (addPlayerPhone.value || '').trim();
     });
     closeAddPlayerModalBtn && closeAddPlayerModalBtn.addEventListener('click', () => {
       if (addPlayerModal) addPlayerModal.style.display = 'none';
+      if (addPlayerExistingInvitee) addPlayerExistingInvitee.value = '';
+      if (addPlayerName) addPlayerName.value = '';
+      if (addPlayerPhone) addPlayerPhone.value = '';
     });
     addPlayerModal && addPlayerModal.addEventListener('click', (e) => {
-      if (e.target === addPlayerModal) addPlayerModal.style.display = 'none';
+      if (e.target === addPlayerModal) {
+        addPlayerModal.style.display = 'none';
+        if (addPlayerExistingInvitee) addPlayerExistingInvitee.value = '';
+        if (addPlayerName) addPlayerName.value = '';
+        if (addPlayerPhone) addPlayerPhone.value = '';
+      }
     });
     detailsLocation && detailsLocation.addEventListener('change', saveDetailsOnChange);
     detailsLocation && detailsLocation.addEventListener('blur', saveDetailsOnChange);

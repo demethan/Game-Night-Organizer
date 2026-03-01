@@ -32,7 +32,7 @@
   </tbody>
 </table>
 
-<script>
+<script nonce="{{ csp_nonce(request) }}">
   (function() {
     const tbody = document.querySelector('#hostTable tbody');
     const inBadge = document.getElementById('inBadge');

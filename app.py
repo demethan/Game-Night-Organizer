@@ -63,6 +63,29 @@ CO_ORG_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$")
 CO_ORG_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 TOTP_ISSUER = "Poker Game Organizer"
 
+
+def get_request_csp_nonce(request: Request) -> str:
+    existing = getattr(getattr(request, "state", None), "csp_nonce", None)
+    if existing:
+        return existing
+    nonce = secrets.token_urlsafe(16)
+    try:
+        request.state.csp_nonce = nonce
+    except Exception:
+        pass
+    return nonce
+
+
+def public_base_url(request: Request) -> str:
+    configured = (os.getenv("APP_BASE_URL") or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    scheme = (request.url.scheme or "https").strip().lower()
+    host = (request.url.netloc or "").strip()
+    if not host:
+        host = "localhost"
+    return f"{scheme}://{host}"
+
 # Python 3.8 environment: implement America/Thunder_Bay (EST/EDT) without zoneinfo.
 def _thunder_bay_dst_bounds(year: int):
     # DST starts 2nd Sunday in March at 2:00, ends 1st Sunday in November at 2:00.
@@ -133,6 +156,8 @@ def format_phone(value: Optional[str]) -> str:
 templates.env.filters["fmt_ts"] = format_ts
 templates.env.filters["fmt_game_time"] = format_game_time
 templates.env.filters["fmt_phone"] = format_phone
+templates.env.globals["csp_nonce"] = get_request_csp_nonce
+templates.env.globals["public_base_url"] = public_base_url
 
 def get_csrf_token(request: Request) -> str:
     token = request.session.get("csrf_token")
@@ -146,6 +171,7 @@ templates.env.globals["csrf_token"] = get_csrf_token
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        nonce = get_request_csp_nonce(request)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -155,7 +181,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             "img-src 'self' data:; "
             "style-src 'self' 'unsafe-inline'; "
-            "script-src 'self' 'unsafe-inline'"
+            f"script-src 'self' 'nonce-{nonce}'; "
+            "object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
         )
         if request.url.scheme == "https":
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
@@ -165,7 +192,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
-        self.hits = {}
         self.limits = {
             "/login": (10, 60),
             "/register": (5, 60),
@@ -182,15 +208,44 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     break
             if key:
                 limit, window = self.limits[key]
-                now = time.time()
-                ip = (request.headers.get("x-forwarded-for") or request.client.host or "unknown").split(",")[0].strip()
-                bucket_key = f"{ip}:{key}"
-                bucket = self.hits.get(bucket_key, [])
-                bucket = [t for t in bucket if now - t < window]
-                if len(bucket) >= limit:
-                    return PlainTextResponse("Too many requests", status_code=429)
-                bucket.append(now)
-                self.hits[bucket_key] = bucket
+                ip = rate_limit_client_ip(request)
+                now = _utc_now_iso()
+                window_start = _utc_minus_seconds_iso(window)
+                conn = get_db()
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        """
+                        DELETE FROM rate_limit_hits
+                        WHERE endpoint = ?
+                          AND ip = ?
+                          AND created_at < ?
+                        """,
+                        (key, ip, window_start),
+                    )
+                    cur.execute(
+                        """
+                        SELECT COUNT(*) AS c
+                        FROM rate_limit_hits
+                        WHERE endpoint = ?
+                          AND ip = ?
+                          AND created_at >= ?
+                        """,
+                        (key, ip, window_start),
+                    )
+                    if int(cur.fetchone()["c"] or 0) >= limit:
+                        conn.commit()
+                        return PlainTextResponse("Too many requests", status_code=429)
+                    cur.execute(
+                        """
+                        INSERT INTO rate_limit_hits (endpoint, ip, created_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (key, ip, now),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
         return await call_next(request)
 
 
@@ -454,6 +509,17 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_phone_created_at ON sms_outbound(phone, created_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_game_created_at ON sms_outbound(game_id, created_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_phone_body_created_at ON sms_outbound(phone, body_hash, created_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rate_limit_hits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            endpoint TEXT NOT NULL,
+            ip TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_hits_endpoint_ip_created ON rate_limit_hits(endpoint, ip, created_at)")
     cur.execute("SELECT id FROM games WHERE host_code IS NULL OR host_code = ''")
     for row in cur.fetchall():
         cur.execute("UPDATE games SET host_code = ? WHERE id = ?", (generate_host_code(conn), row["id"]))
@@ -727,6 +793,18 @@ def clean_text(value: str, max_len: int) -> str:
     return cleaned
 
 
+def rate_limit_client_ip(request: Request) -> str:
+    # Trust forwarded client IP only when explicitly enabled behind a trusted proxy.
+    trust_proxy = (os.getenv("TRUST_PROXY_HEADERS", "false").strip().lower() in {"1", "true", "on", "yes"})
+    if trust_proxy:
+        xff = (request.headers.get("x-forwarded-for") or "").strip()
+        if xff:
+            candidate = xff.split(",")[0].strip()
+            if candidate:
+                return candidate
+    return (request.client.host if request.client else None) or "unknown"
+
+
 def parse_co_organizer_identifier(value: str) -> tuple[str, str]:
     raw = (value or "").strip()
     if not raw:
@@ -797,13 +875,7 @@ def should_verify_phone(game_row) -> bool:
 
 
 def invite_link(request: Request, code: str) -> str:
-    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",")[0].strip() or "https"
-    host = (
-        (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
-        or (request.headers.get("host") or "").strip()
-        or request.url.netloc
-    )
-    return f"{proto}://{host}/game?g={code}"
+    return f"{public_base_url(request)}/game?g={code}"
 
 
 def build_invite_sms_text(request: Request, game_row, seat_label: Optional[str]) -> str:
@@ -1022,15 +1094,30 @@ def log_sms_outbound(conn: sqlite3.Connection, game_id: Optional[int], phone_10:
 
 
 def audit_sms_event(event: str, game_id: Optional[int], phone_10: str, kind: str, detail: str) -> None:
+    masked_phone = format_phone(phone_10).replace("+1", "+1 ***")
     # Keep this stdout log lightweight for operational monitoring.
     print(
         f"[sms-audit] event={event} game_id={game_id if game_id is not None else '-'} "
-        f"phone={phone_10} kind={kind} detail={str(detail or '')[:160]}"
+        f"phone={masked_phone} kind={kind} detail={str(detail or '')[:160]}"
     )
 
 
 def generate_phone_verification_code() -> str:
     return f"{secrets.randbelow(900000) + 100000}"
+
+
+def otp_code_hash(code: str) -> str:
+    return "sha256:" + hashlib.sha256(str(code or "").strip().encode("utf-8")).hexdigest()
+
+
+def otp_code_matches(stored: str, candidate: str) -> bool:
+    raw_stored = str(stored or "").strip()
+    raw_candidate = str(candidate or "").strip()
+    if raw_stored.startswith("sha256:"):
+        expected = otp_code_hash(raw_candidate)
+        return hmac.compare_digest(raw_stored, expected)
+    # Backward compatibility for pre-hash rows still in DB.
+    return hmac.compare_digest(raw_stored, raw_candidate)
 
 
 def user_phone_is_verified(user_row) -> bool:
@@ -1117,7 +1204,7 @@ def create_user_mfa_code(conn: sqlite3.Connection, user_id: int) -> str:
         INSERT INTO user_mfa_codes (user_id, code, created_at, expires_at, used_at)
         VALUES (?, ?, ?, ?, NULL)
         """,
-        (user_id, code, now, expires_at),
+        (user_id, otp_code_hash(code), now, expires_at),
     )
     return code
 
@@ -1154,7 +1241,7 @@ def verify_user_mfa_code(conn: sqlite3.Connection, user_id: int, code: str) -> b
     row = cur.fetchone()
     if not row:
         return False
-    if str(row["code"]).strip() != str(code or "").strip():
+    if not otp_code_matches(row["code"], code):
         return False
     try:
         expires_at = datetime.fromisoformat(row["expires_at"])
@@ -1254,7 +1341,7 @@ def create_user_phone_verification(conn: sqlite3.Connection, user_id: int, phone
             expires_at = excluded.expires_at,
             verified_at = NULL
         """,
-        (user_id, phone_10, code, _utc_now_iso(), _utc_in_minutes_iso(10)),
+        (user_id, phone_10, otp_code_hash(code), _utc_now_iso(), _utc_in_minutes_iso(10)),
     )
     return code
 
@@ -1273,7 +1360,7 @@ def verify_user_phone_code(conn: sqlite3.Connection, user_id: int, phone_10: str
     row = cur.fetchone()
     if not row:
         return False
-    if str(row["code"]).strip() != str(code or "").strip():
+    if not otp_code_matches(row["code"], code):
         return False
     try:
         expires_at = datetime.fromisoformat(row["expires_at"])
@@ -1319,7 +1406,7 @@ def create_or_refresh_phone_code(conn: sqlite3.Connection, game_id: int, phone_1
             expires_at = excluded.expires_at,
             verified_at = NULL
         """,
-        (game_id, phone_10, code, now, expires_at),
+        (game_id, phone_10, otp_code_hash(code), now, expires_at),
     )
     return code
 
@@ -1333,7 +1420,7 @@ def confirm_phone_code(conn: sqlite3.Connection, game_id: int, phone_10: str, co
     row = cur.fetchone()
     if not row:
         return False
-    if str(row["code"]).strip() != str(code or "").strip():
+    if not otp_code_matches(row["code"], code):
         return False
     try:
         expires_at = datetime.fromisoformat(row["expires_at"])
@@ -1447,6 +1534,31 @@ def maybe_send_choice_confirmation_sms(conn: sqlite3.Connection, game_row, phone
     if seat_label:
         base += f" Seat: {seat_label}."
     send_twilio_sms_guarded(conn, int(game_row["id"]), phone_10, base, "choice_confirm")
+
+
+def maybe_send_added_player_sms(
+    conn: sqlite3.Connection,
+    request: Request,
+    game_row,
+    phone_10: Optional[str],
+    status: str,
+) -> None:
+    if not phone_10:
+        return
+    state = (status or "").upper()
+    if state not in {"IN", "LATE", "OUT"}:
+        return
+    lines = [
+        str(game_row["title"]),
+        f"You were added as {state} by the organizer.",
+        f"When: {game_row['game_date']} at {format_game_time(game_row['game_time'])}",
+        f"Where: {game_row['location']}",
+        f"RSVP: {invite_link(request, game_row['code'])}",
+    ]
+    if should_verify_phone(game_row):
+        lines.append("Phone verification is completed on the RSVP page.")
+    body = "\n".join(lines)
+    send_twilio_sms_guarded(conn, int(game_row["id"]), phone_10, body, "organizer_add_confirm")
 
 
 def maybe_send_standby_confirmation_sms(conn: sqlite3.Connection, game_row, phone_10: Optional[str], position: int) -> None:
@@ -2802,6 +2914,17 @@ def view_game(request: Request, game_id: int):
         (game_id,),
     )
     co_organizers = cur.fetchall()
+    cur.execute(
+        """
+        SELECT name, phone
+        FROM organizer_invitees
+        WHERE organizer_id = ?
+        ORDER BY datetime(last_seen_at) DESC, LOWER(name) ASC
+        LIMIT 300
+        """,
+        (int(game["organizer_id"]),),
+    )
+    invitee_directory = cur.fetchall()
 
     in_count = count_in(conn, game_id)
     broadcast_table_options = table_labels(len(table_sizes(game["total_players"], True))) if game_uses_multiple_tables(game) else []
@@ -2817,6 +2940,7 @@ def view_game(request: Request, game_id: int):
             "in_count": in_count,
             "is_owner": is_owner,
             "co_organizers": co_organizers,
+            "invitee_directory": invitee_directory,
             "broadcast_table_options": broadcast_table_options,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
@@ -3280,6 +3404,7 @@ def add_rsvp(
         (game_id, cleaned_name, cleaned_phone, status, None, seat_number, now),
     )
     upsert_invitee_profiles(conn, int(game["organizer_id"]), cleaned_phone, cleaned_name)
+    maybe_send_added_player_sms(conn, request, game, cleaned_phone, status)
     assign_seats_if_ready(conn, game_id, total_players)
     cur.execute("SELECT * FROM games WHERE id = ?", (game_id,))
     updated_game = cur.fetchone() or game

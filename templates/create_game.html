@@ -72,7 +72,7 @@
 
 <link rel="stylesheet" href="/static/flatpickr.min.css">
 <script src="/static/flatpickr.min.js"></script>
-<script>
+<script nonce="{{ csp_nonce(request) }}">
   (function() {
     const toggle = document.getElementById('multipleTablesToggle');
     const state = document.getElementById('multipleTablesState');

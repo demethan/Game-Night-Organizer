@@ -83,9 +83,9 @@
   {% endif %}
 </div>
 <div class="invite-actions invite-actions-top">
-  <button class="btn invite-btn invite-btn-in" type="button" onclick="submitStatus('IN')">IN</button>
-  <button class="btn danger invite-btn invite-btn-out" type="button" onclick="submitStatus('OUT')">OUT</button>
-  <button class="btn secondary invite-btn invite-btn-late" type="button" onclick="openLateModal()">LATE</button>
+  <button class="btn invite-btn invite-btn-in" type="button" id="inviteInBtn">IN</button>
+  <button class="btn danger invite-btn invite-btn-out" type="button" id="inviteOutBtn">OUT</button>
+  <button class="btn secondary invite-btn invite-btn-late" type="button" id="inviteLateBtn">LATE</button>
 </div>
 <div id="alreadyVoted" class="notice notice-strong" style="display:none;">
   <div id="alreadyVotedText">You already responded to this game.</div>
@@ -103,7 +103,7 @@
     <div>
       <div class="invite-label-row">
         <label style="margin:0;">Name</label>
-        <button type="button" class="invite-info-inline" onclick="toggleInfo()" aria-label="Info">ℹ️</button>
+        <button type="button" class="invite-info-inline" id="inviteInfoBtn" aria-label="Info">ℹ️</button>
       </div>
       <input type="text" name="name" id="name" autocomplete="name" placeholder="Your name" required>
     </div>
@@ -132,8 +132,8 @@
     <h3>When Will You Arrive?</h3>
     <input type="time" id="lateModalTime">
     <div class="row" style="margin-top:12px;">
-      <button class="btn" type="button" onclick="confirmLateTime()">OK</button>
-      <button class="btn secondary" type="button" onclick="closeLateModal()">Cancel</button>
+      <button class="btn" type="button" id="lateOkBtn">OK</button>
+      <button class="btn secondary" type="button" id="lateCancelBtn">Cancel</button>
     </div>
   </div>
 </div>
@@ -142,8 +142,8 @@
     <h3>Add Your Cell Number?</h3>
     <p style="margin-bottom:10px;">Add your number if you want verification and SMS updates for this game.</p>
     <div class="row" style="margin-top:12px;">
-      <button class="btn" type="button" onclick="focusPhoneField()">Add Number</button>
-      <button class="btn secondary" type="button" onclick="skipPhoneAndContinue()">Skip</button>
+      <button class="btn" type="button" id="missingPhoneAddBtn">Add Number</button>
+      <button class="btn secondary" type="button" id="missingPhoneSkipBtn">Skip</button>
     </div>
   </div>
 </div>
@@ -154,15 +154,15 @@
     <p id="verifyModalMessage" style="margin-bottom:10px;">Enter the 6-digit code sent by text.</p>
     <input type="text" id="verifyCodeInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
     <div class="row" style="margin-top:12px;">
-      <button class="btn" type="button" onclick="applyVerifyCode()">Verify</button>
-      <button class="btn secondary" type="button" onclick="sendVerifyCode()">Send Code</button>
-      <button class="btn secondary" type="button" onclick="closeVerifyModal()">Close</button>
+      <button class="btn" type="button" id="verifyApplyBtn">Verify</button>
+      <button class="btn secondary" type="button" id="verifySendCodeBtn">Send Code</button>
+      <button class="btn secondary" type="button" id="verifyCloseBtn">Close</button>
     </div>
   </div>
 </div>
 {% endif %}
 
-<script>
+<script nonce="{{ csp_nonce(request) }}">
 window._serverVerifiedPhone = window._serverVerifiedPhone || null;
 window._verifySendCooldownUntil = window._verifySendCooldownUntil || 0;
 (function() {
@@ -356,7 +356,7 @@ function maskPhoneForUi(value) {
 }
 
 function startVerifySendCooldown(seconds) {
-  const sendBtn = document.querySelector('#verifyModal button.btn.secondary[onclick=\"sendVerifyCode()\"]');
+  const sendBtn = document.getElementById('verifySendCodeBtn');
   if (!sendBtn) return;
   window._verifySendCooldownUntil = Date.now() + (seconds * 1000);
   const tick = () => {
@@ -536,8 +536,30 @@ function applyVerifyCode() {
 }
 
 (function() {
+  const inBtn = document.getElementById('inviteInBtn');
+  const outBtn = document.getElementById('inviteOutBtn');
+  const lateBtn = document.getElementById('inviteLateBtn');
+  const infoBtn = document.getElementById('inviteInfoBtn');
+  const lateOkBtn = document.getElementById('lateOkBtn');
+  const lateCancelBtn = document.getElementById('lateCancelBtn');
+  const missingAddBtn = document.getElementById('missingPhoneAddBtn');
+  const missingSkipBtn = document.getElementById('missingPhoneSkipBtn');
+  const verifyApplyBtn = document.getElementById('verifyApplyBtn');
+  const verifySendBtn = document.getElementById('verifySendCodeBtn');
+  const verifyCloseBtn = document.getElementById('verifyCloseBtn');
   const verifyBtn = document.getElementById('verifyPhoneBtn');
   const phoneInput = document.getElementById('phone');
+  inBtn && inBtn.addEventListener('click', () => { submitStatus('IN'); });
+  outBtn && outBtn.addEventListener('click', () => { submitStatus('OUT'); });
+  lateBtn && lateBtn.addEventListener('click', () => { openLateModal(); });
+  infoBtn && infoBtn.addEventListener('click', () => { toggleInfo(); });
+  lateOkBtn && lateOkBtn.addEventListener('click', () => { confirmLateTime(); });
+  lateCancelBtn && lateCancelBtn.addEventListener('click', () => { closeLateModal(); });
+  missingAddBtn && missingAddBtn.addEventListener('click', () => { focusPhoneField(); });
+  missingSkipBtn && missingSkipBtn.addEventListener('click', () => { skipPhoneAndContinue(); });
+  verifyApplyBtn && verifyApplyBtn.addEventListener('click', () => { applyVerifyCode(); });
+  verifySendBtn && verifySendBtn.addEventListener('click', () => { sendVerifyCode(); });
+  verifyCloseBtn && verifyCloseBtn.addEventListener('click', () => { closeVerifyModal(); });
   if (verifyBtn) {
     verifyBtn.addEventListener('click', () => { sendVerifyCode(); });
   }

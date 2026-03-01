@@ -62,8 +62,8 @@
     <h3>Add Your Cell Number?</h3>
     <p style="margin-bottom:10px;">Add your number if you want verification and SMS updates for this game.</p>
     <div class="row" style="margin-top:12px;">
-      <button class="btn" type="button" onclick="focusStandbyPhoneField()">Add Number</button>
-      <button class="btn secondary" type="button" onclick="skipStandbyPhoneAndContinue()">Skip</button>
+      <button class="btn" type="button" id="standbyMissingAddBtn">Add Number</button>
+      <button class="btn secondary" type="button" id="standbyMissingSkipBtn">Skip</button>
     </div>
   </div>
 </div>
@@ -74,15 +74,15 @@
     <p id="standbyVerifyModalMessage" style="margin-bottom:10px;">Enter the 6-digit code sent by text.</p>
     <input type="text" id="standbyVerificationCodeInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
     <div class="row" style="margin-top:12px;">
-      <button class="btn" type="button" onclick="applyStandbyVerifyCode()">Verify</button>
-      <button class="btn secondary" type="button" onclick="sendStandbyVerifyCode()">Send Code</button>
-      <button class="btn secondary" type="button" onclick="closeStandbyVerifyModal()">Close</button>
+      <button class="btn" type="button" id="standbyVerifyApplyBtn">Verify</button>
+      <button class="btn secondary" type="button" id="standbyVerifySendCodeBtn">Send Code</button>
+      <button class="btn secondary" type="button" id="standbyVerifyCloseBtn">Close</button>
     </div>
   </div>
 </div>
 {% endif %}
 
-<script>
+<script nonce="{{ csp_nonce(request) }}">
 window._standbyServerVerifiedPhone = window._standbyServerVerifiedPhone || null;
 window._standbyVerifySendCooldownUntil = window._standbyVerifySendCooldownUntil || 0;
 (function() {
@@ -332,7 +332,7 @@ function maskStandbyPhoneForUi(value) {
 }
 
 function startStandbyVerifySendCooldown(seconds) {
-  const sendBtn = document.querySelector('#standbyVerifyModal button.btn.secondary[onclick=\"sendStandbyVerifyCode()\"]');
+  const sendBtn = document.getElementById('standbyVerifySendCodeBtn');
   if (!sendBtn) return;
   window._standbyVerifySendCooldownUntil = Date.now() + (seconds * 1000);
   const tick = () => {
@@ -438,8 +438,18 @@ function applyStandbyVerifyCode() {
 }
 
 (function() {
+  const missingAddBtn = document.getElementById('standbyMissingAddBtn');
+  const missingSkipBtn = document.getElementById('standbyMissingSkipBtn');
+  const verifyApplyBtn = document.getElementById('standbyVerifyApplyBtn');
+  const verifySendBtn = document.getElementById('standbyVerifySendCodeBtn');
+  const verifyCloseBtn = document.getElementById('standbyVerifyCloseBtn');
   const phoneInput = document.getElementById('standbyPhone');
   const verifyBtn = document.getElementById('standbyVerifyPhoneBtn');
+  missingAddBtn && missingAddBtn.addEventListener('click', () => { focusStandbyPhoneField(); });
+  missingSkipBtn && missingSkipBtn.addEventListener('click', () => { skipStandbyPhoneAndContinue(); });
+  verifyApplyBtn && verifyApplyBtn.addEventListener('click', () => { applyStandbyVerifyCode(); });
+  verifySendBtn && verifySendBtn.addEventListener('click', () => { sendStandbyVerifyCode(); });
+  verifyCloseBtn && verifyCloseBtn.addEventListener('click', () => { closeStandbyVerifyModal(); });
   if (phoneInput) {
     phoneInput.addEventListener('input', () => {
       window._skipStandbyPhonePrompt = false;

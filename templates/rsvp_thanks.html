@@ -13,7 +13,7 @@
   {% endif %}
 {% endif %}
 <p>{{ game['title'] }} • {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</p>
-<script>
+<script nonce="{{ csp_nonce(request) }}">
   localStorage.setItem('poker_rsvp_{{ game["code"] }}', '{{ status }}');
   {% if invitee_token %}
   localStorage.setItem('poker_invitee_token', '{{ invitee_token }}');
