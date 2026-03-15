@@ -1,4 +1,4 @@
-# Luck's Poker Game Organizer
+# Poker Invite Manager
 
 A mobile-first web app to organize poker games with invite links, RSVP tracking, and standby lists.
 

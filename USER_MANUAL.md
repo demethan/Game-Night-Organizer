@@ -1,4 +1,4 @@
-# User Manual — Luck's Poker Game Organizer
+# User Manual — Poker Invite Manager
 
 ## Organizer Guide
 
@@ -71,4 +71,3 @@
 ## Troubleshooting
 - If you see a 502 error, check `poker-app` service status
 - If the page looks cached after changes, hard refresh
-

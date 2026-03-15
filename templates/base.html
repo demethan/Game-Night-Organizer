@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title if title else "Luck's Poker Game Organizer" }}</title>
+  <title>{{ title if title else "Poker Invite Manager" }}</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-app-32.png">
   <link rel="icon" type="image/svg+xml" href="/static/favicon-app.svg">
   <link rel="alternate icon" href="/static/favicon-app.svg">
@@ -14,7 +14,7 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div class="brand">Luck's Poker Game Organizer</div>
+      <div class="brand">Poker Invite Manager</div>
       {% if request.session.get('user_id') %}
       <nav class="nav">
         <a href="/dashboard">Dashboard</a>

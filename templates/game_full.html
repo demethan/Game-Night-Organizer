@@ -107,8 +107,12 @@ window._standbyVerifySendCooldownUntil = window._standbyVerifySendCooldownUntil 
   const savedName = localStorage.getItem('poker_name');
   const savedPhone = localStorage.getItem('poker_phone');
   const inviteeTokenKey = 'poker_invitee_token';
+  const serverInviteeToken = {{ (invitee_token_seed or '') | tojson }};
   let savedInviteeToken = localStorage.getItem(inviteeTokenKey);
-  if (!savedInviteeToken) {
+  if (serverInviteeToken) {
+    savedInviteeToken = serverInviteeToken;
+    localStorage.setItem(inviteeTokenKey, savedInviteeToken);
+  } else if (!savedInviteeToken) {
     savedInviteeToken = (Math.random().toString(36).slice(2) + Date.now().toString(36)).slice(0, 32);
     localStorage.setItem(inviteeTokenKey, savedInviteeToken);
   }
