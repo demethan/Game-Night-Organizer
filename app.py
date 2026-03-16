@@ -57,6 +57,8 @@ SMS_DUPLICATE_COOLDOWN_SECONDS = 90
 SMS_PER_ORGANIZER_HOUR_LIMIT = 180
 SMS_PER_ORGANIZER_DAY_LIMIT = 700
 CANCELLATION_SMS_COOLDOWN_HOURS = 6
+INBOUND_UNKNOWN_REPLY_LIMIT = 2
+INBOUND_UNKNOWN_REPLY_WINDOW_HOURS = 24
 TRUSTED_DEVICE_DAYS = 30
 TRUSTED_DEVICE_COOKIE = "poker_trusted_device"
 INVITEE_TOKEN_COOKIE = "poker_invitee_token"
@@ -655,6 +657,18 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_phone_created_at ON sms_outbound(phone, created_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_game_created_at ON sms_outbound(game_id, created_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_phone_body_created_at ON sms_outbound(phone, body_hash, created_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS inbound_sms_unknown (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            body_hash TEXT NOT NULL,
+            body_preview TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_inbound_sms_unknown_phone_created_at ON inbound_sms_unknown(phone, created_at)")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS rate_limit_hits (
@@ -2175,6 +2189,10 @@ def twiml_message(text: str) -> str:
     return f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
 
 
+def twiml_empty_response() -> str:
+    return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+
+
 def active_games_for_phone(conn: sqlite3.Connection, phone_10: str) -> list:
     cur = conn.cursor()
     cur.execute(
@@ -2319,6 +2337,38 @@ def parse_inbound_late_eta(text: str) -> Optional[str]:
         except Exception:
             return None
     return None
+
+
+def _inbound_unknown_body_hash(text: str) -> str:
+    normalized = " ".join((text or "").strip().upper().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def should_reply_to_unknown_inbound(conn: sqlite3.Connection, phone_10: str, text: str) -> bool:
+    cur = conn.cursor()
+    window_start = _utc_minus_seconds_iso(INBOUND_UNKNOWN_REPLY_WINDOW_HOURS * 60 * 60)
+    cur.execute(
+        "DELETE FROM inbound_sms_unknown WHERE phone = ? AND created_at < ?",
+        (phone_10, window_start),
+    )
+    cur.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM inbound_sms_unknown
+        WHERE phone = ?
+          AND created_at >= ?
+        """,
+        (phone_10, window_start),
+    )
+    count = int(cur.fetchone()["c"] or 0)
+    cur.execute(
+        """
+        INSERT INTO inbound_sms_unknown (phone, body_hash, body_preview, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (phone_10, _inbound_unknown_body_hash(text), (text or "").strip()[:80], _utc_now_iso()),
+    )
+    return count < INBOUND_UNKNOWN_REPLY_LIMIT
 
 
 def build_inbound_status_text(conn: sqlite3.Connection, phone_10: str) -> str:
@@ -2480,7 +2530,7 @@ def apply_inbound_game_command(conn: sqlite3.Connection, request: Request, game_
     return f"{game_row['title']}: marked {target_status}."
 
 
-def handle_inbound_sms_command(conn: sqlite3.Connection, request: Request, phone_10: str, raw_text: str) -> str:
+def handle_inbound_sms_command(conn: sqlite3.Connection, request: Request, phone_10: str, raw_text: str) -> Optional[str]:
     text = " ".join((raw_text or "").strip().split())
     if not text:
         return build_inbound_help_text()
@@ -2495,7 +2545,9 @@ def handle_inbound_sms_command(conn: sqlite3.Connection, request: Request, phone
         return f"Open this link to verify and sync your invite identity: {verify_link}"
     command = upper.split(" ", 1)[0]
     if command not in {"IN", "OUT", "LATE", "STANDBY"}:
-        return build_inbound_help_text()
+        if should_reply_to_unknown_inbound(conn, phone_10, text):
+            return build_inbound_help_text()
+        return None
     games = relevant_games_for_phone(conn, phone_10)
     if not games:
         return "No current game found for this number. Open your RSVP link first, or reply VERIFY to sync identity."
@@ -2558,7 +2610,9 @@ def twilio_sms_inbound(request: Request, From: str = Form(None), Body: str = For
         conn.commit()
     finally:
         conn.close()
-    return PlainTextResponse(twiml_message(text), media_type="application/xml")
+    if text:
+        return PlainTextResponse(twiml_message(text), media_type="application/xml")
+    return PlainTextResponse(twiml_empty_response(), media_type="application/xml")
 
 
 @app.post("/twilio/voice/inbound")
@@ -4534,7 +4588,7 @@ def lookup_contact(
     except ValueError:
         cleaned_phone = None
     cleaned_name = None
-    if not cleaned_token:
+    if not cleaned_token and name is not None:
         try:
             cleaned_name = clean_text(name, 50)
         except ValueError:
