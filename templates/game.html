@@ -260,10 +260,10 @@ window._verifySendCooldownUntil = window._verifySendCooldownUntil || 0;
       if (alreadyVotedBox) {
         const isKnownResponse = responseStatus === 'IN' || responseStatus === 'OUT' || responseStatus === 'LATE' || responseStatus === 'HOST';
         alreadyVotedBox.style.display = isKnownResponse ? 'block' : 'none';
-        if (inviteActions) inviteActions.style.display = isKnownResponse ? 'none' : '';
+        if (inviteActions) inviteActions.style.display = '';
         if (isKnownResponse && alreadyVotedText) {
           const statusLabel = responseStatus === 'HOST' ? 'IN' : responseStatus;
-          alreadyVotedText.textContent = `Current status: ${statusLabel}. RSVP already completed.`;
+          alreadyVotedText.textContent = `Current status: ${statusLabel}. You can change your response below.`;
         }
       }
       if (rosterDetails && responseStatus) {

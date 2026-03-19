@@ -66,6 +66,7 @@ INVITEE_VERIFY_LINK_TTL_MINUTES = 20
 CO_ORG_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$")
 CO_ORG_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 TOTP_ISSUER = "Poker Invite Manager"
+CSRF_SIGNED_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def get_request_csp_nonce(request: Request) -> str:
@@ -163,12 +164,44 @@ templates.env.filters["fmt_phone"] = format_phone
 templates.env.globals["csp_nonce"] = get_request_csp_nonce
 templates.env.globals["public_base_url"] = public_base_url
 
+def _csrf_secret() -> str:
+    return (os.getenv("SESSION_SECRET") or "").strip() or "dev-csrf-secret"
+
+
+def create_signed_csrf_token() -> str:
+    ts = str(int(time.time()))
+    nonce = secrets.token_urlsafe(12)
+    payload = f"{ts}.{nonce}"
+    sig = hmac.new(_csrf_secret().encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def verify_signed_csrf_token(token: Optional[str]) -> bool:
+    value = (token or "").strip()
+    parts = value.split(".")
+    if len(parts) != 3:
+        return False
+    ts, nonce, provided_sig = parts
+    if not ts or not nonce or not provided_sig:
+        return False
+    if not ts.isdigit():
+        return False
+    try:
+        issued_at = int(ts)
+    except Exception:
+        return False
+    if issued_at + CSRF_SIGNED_TOKEN_TTL_SECONDS < int(time.time()):
+        return False
+    payload = f"{ts}.{nonce}"
+    expected_sig = hmac.new(_csrf_secret().encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(provided_sig, expected_sig)
+
+
 def get_csrf_token(request: Request) -> str:
-    token = request.session.get("csrf_token")
-    if not token:
-        token = secrets.token_urlsafe(32)
-        request.session["csrf_token"] = token
-    return token
+    session_token = request.session.get("csrf_token")
+    if not session_token:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    return create_signed_csrf_token()
 
 templates.env.globals["csrf_token"] = get_csrf_token
 
@@ -458,6 +491,8 @@ def init_db():
         cur.execute("ALTER TABLE games ADD COLUMN cancellation_sms_due_at TEXT")
     if "cancellation_sms_sent_at" not in game_cols:
         cur.execute("ALTER TABLE games ADD COLUMN cancellation_sms_sent_at TEXT")
+    if "manual_seat_assignment" not in game_cols:
+        cur.execute("ALTER TABLE games ADD COLUMN manual_seat_assignment INTEGER DEFAULT 0")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_games_host_code ON games(host_code)")
     cur.execute(
         """
@@ -860,6 +895,11 @@ def seat_display(seat_number: Optional[int], total_players: int, multiple_tables
 def seat_threshold_reached(conn: sqlite3.Connection, game_id: int, total_players: int) -> bool:
     if total_players <= 0:
         return False
+    cur = conn.cursor()
+    cur.execute("SELECT manual_seat_assignment FROM games WHERE id = ?", (game_id,))
+    game_row = cur.fetchone()
+    if game_row and int(game_row["manual_seat_assignment"] or 0) == 1:
+        return True
     return (count_in(conn, game_id) / total_players) >= 0.8
 
 
@@ -943,7 +983,12 @@ def backfill_seats(conn: sqlite3.Connection) -> None:
 
 
 def verify_csrf(request: Request, token: str) -> bool:
-    return token and token == request.session.get("csrf_token")
+    if not token:
+        return False
+    session_token = request.session.get("csrf_token")
+    if session_token and token == session_token:
+        return True
+    return verify_signed_csrf_token(token)
 
 
 def clean_text(value: str, max_len: int) -> str:
@@ -3296,11 +3341,13 @@ def build_new_game_form_context(request: Request, user_id: int, error: Optional[
     )
     organizer_name_suggestions = [row["name"] for row in cur.fetchall() if row["name"]]
     conn.close()
+    default_game_date = thunder_bay_now().strftime("%Y-%m-%d")
 
     return {
         "request": request,
         "error": error,
         "last_game": last_game,
+        "default_game_date": default_game_date,
         "last_organizer_name": last_organizer_name,
         "last_organizer_phone": last_organizer_phone,
         "title_suggestions": title_suggestions,
@@ -3482,7 +3529,7 @@ def view_game(request: Request, game_id: int):
         SELECT name, phone
         FROM organizer_invitees
         WHERE organizer_id = ?
-        ORDER BY datetime(last_seen_at) DESC, LOWER(name) ASC
+        ORDER BY LOWER(name) ASC, datetime(last_seen_at) DESC
         LIMIT 300
         """,
         (int(game["organizer_id"]),),
@@ -3794,6 +3841,28 @@ def toggle_game_sms(request: Request, game_id: int, csrf_token: str = Form(...))
     conn.close()
     msg = "SMS%20enabled" if next_value == 1 else "SMS%20disabled"
     return RedirectResponse(url=f"/games/{game_id}?success={msg}", status_code=302)
+
+
+@app.post("/games/{game_id}/seats/assign")
+def assign_game_seats_now(request: Request, game_id: int, csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+
+    conn = get_db()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
+    if not game:
+        conn.close()
+        return RedirectResponse(url="/dashboard", status_code=302)
+
+    cur = conn.cursor()
+    cur.execute("UPDATE games SET manual_seat_assignment = 1 WHERE id = ?", (game_id,))
+    assign_seats_if_ready(conn, game_id, int(game["total_players"]))
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url=f"/games/{game_id}?success=Seats%20assigned", status_code=302)
 
 
 @app.post("/games/{game_id}/details/update")

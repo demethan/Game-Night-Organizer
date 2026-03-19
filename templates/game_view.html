@@ -30,9 +30,12 @@
   </span>
 </p>
 <div class="row organizer-actions organizer-actions-buttons">
-  <button class="btn secondary copy-btn invite-link-btn" type="button" data-link="{{ public_base_url(request) }}/game?g={{ game['code'] }}">Copy Invite Link</button>
   <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
   <button class="btn secondary" type="button" id="openBroadcastModal">Send Announcement</button>
+  <form method="post" action="/games/{{ game['id'] }}/seats/assign" id="seatAssignForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="btn secondary" type="submit">{% if game['manual_seat_assignment'] %}Reassign Seats{% else %}Assign Seats Now{% endif %}</button>
+  </form>
   <form method="post" action="/games/{{ game['id'] }}/sms-toggle" id="smsToggleForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['sms_enabled'] %}Disable SMS{% else %}Enable SMS{% endif %}</button>
@@ -42,6 +45,7 @@
 <div class="row organizer-actions organizer-actions-badges">
   <span class="badge" id="playersInBadge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
   <span class="badge">SMS: {% if game['sms_enabled'] %}ON{% else %}OFF{% endif %}</span>
+  {% if game['manual_seat_assignment'] %}<span class="badge">Seats: Manual</span>{% endif %}
   {% if game['is_cancelled'] %}<span class="badge">Status: Cancelled</span>{% endif %}
 </div>
 <div id="broadcastModal" class="modal" style="display:none;">
@@ -797,20 +801,6 @@
     detailsDate && detailsDate.addEventListener('change', saveDetailsOnChange);
     detailsTime && detailsTime.addEventListener('change', saveDetailsOnChange);
     detailsMultipleTables && detailsMultipleTables.addEventListener('change', saveDetailsOnChange);
-
-    const copyBtn = document.querySelector('.copy-btn');
-    if (copyBtn) {
-      copyBtn.addEventListener('click', async () => {
-        const link = copyBtn.getAttribute('data-link') || '';
-        try {
-          await navigator.clipboard.writeText(link);
-          copyBtn.textContent = 'Copied!';
-          setTimeout(() => { copyBtn.textContent = 'Copy Invite Link'; }, 1500);
-        } catch (e) {
-          prompt('Copy this link:', link);
-        }
-      });
-    }
 
     const copyTextBtn = document.querySelector('.copy-text-btn');
     if (copyTextBtn) {
