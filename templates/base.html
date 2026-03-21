@@ -8,11 +8,11 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon-app.svg">
   <link rel="alternate icon" href="/static/favicon-app.svg">
   <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon-app.png">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="{{ static_asset('static/styles.css') }}">
   {% block extra_head %}{% endblock %}
 </head>
-<body>
-  <div class="app">
+<body class="{% block body_class %}{% endblock %}">
+  <div class="app {% block app_class %}{% endblock %}">
     <header class="topbar">
       <div class="brand">Poker Invite Manager</div>
       {% if request.session.get('user_id') %}
@@ -29,7 +29,7 @@
       {% endif %}
     </header>
 
-    <main class="content">
+    <main class="content {% block content_class %}{% endblock %}">
       {% block content %}{% endblock %}
     </main>
   </div>

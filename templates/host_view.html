@@ -1,42 +1,74 @@
 {% extends "base.html" %}
+{% block body_class %}host-display-page{% endblock %}
+{% block app_class %}host-display-app{% endblock %}
+{% block content_class %}host-display-content{% endblock %}
 {% block content %}
-<h1>{{ game['title'] }} - Game Roster</h1>
-<p class="game-meta">
-  <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</span>
-  <span class="game-location">📍 {{ game['location'] }}</span>
-</p>
-<div class="row" style="margin-bottom: 12px;">
-  <span class="badge" id="inBadge">IN: {{ in_count }}</span>
-  <span class="badge" id="lateBadge">LATE: {{ late_count }}</span>
-</div>
+{% if request.session.get('user_id') %}
+<a class="host-display-dashboard-link" href="/dashboard">Dashboard</a>
+{% endif %}
+<div class="host-display-viewport" id="hostDisplayViewport">
+  <div class="host-display-board" id="hostDisplayBoard">
+    <div class="host-display-shell">
+      <div class="host-display-header">
+        <div>
+          <h1 class="host-display-title">{{ game['title'] }}</h1>
+        </div>
+        <div class="row host-display-badges">
+          <span class="badge host-display-badge" id="inBadge">IN: {{ in_count }}</span>
+          <span class="badge host-display-badge" id="lateBadge">LATE: {{ late_count }}</span>
+        </div>
+      </div>
 
-<table class="table rsvp-table" id="hostTable">
-  <thead>
-    <tr>
-      <th>Name</th>
-      <th>Status</th>
-      <th>ETA</th>
-      <th>Seat</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for p in players %}
-    <tr data-status="{{ p['status'] }}">
-      <td data-label="Name">{{ p['name'] }}</td>
-      <td data-label="Status">{{ p['status'] }}</td>
-      <td data-label="ETA">{{ p['late_eta'] or '-' }}</td>
-      <td data-label="Seat" data-seat-number="{{ p['seat_number'] or '' }}">{{ p['seat_label'] or '-' }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+      <div class="host-display-table-wrap">
+        <table class="table rsvp-table host-display-table" id="hostTable">
+          <thead>
+            <tr>
+              <th>Response Time</th>
+              <th>Name</th>
+              <th>Status</th>
+              <th>ETA</th>
+              <th>Seat</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for p in players %}
+            <tr data-status="{{ p['status'] }}">
+              <td data-label="Response Time" data-rank="{{ p['response_rank'] or '' }}">
+                {% if p['status'] == 'HOST' %}
+                Host
+                {% elif p['response_rank'] == 1 %}
+                🥇 {{ p['response_minutes'] if p['response_minutes'] is not none else '-' }}m
+                {% elif p['response_rank'] == 2 %}
+                🥈 {{ p['response_minutes'] if p['response_minutes'] is not none else '-' }}m
+                {% elif p['response_rank'] == 3 %}
+                🥉 {{ p['response_minutes'] if p['response_minutes'] is not none else '-' }}m
+                {% elif p['response_rank'] %}
+                {{ p['response_minutes'] if p['response_minutes'] is not none else '-' }}m
+                {% else %}
+                -
+                {% endif %}
+              </td>
+              <td data-label="Name">{{ p['name'] }}</td>
+              <td data-label="Status">{{ p['status'] }}</td>
+              <td data-label="ETA">{{ p['late_eta'] or '-' }}</td>
+              <td data-label="Seat" data-seat-number="{{ p['seat_number'] or '' }}">{{ p['seat_label'] or '-' }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script nonce="{{ csp_nonce(request) }}">
   (function() {
+    const viewport = document.getElementById('hostDisplayViewport');
+    const board = document.getElementById('hostDisplayBoard');
     const tbody = document.querySelector('#hostTable tbody');
     const inBadge = document.getElementById('inBadge');
     const lateBadge = document.getElementById('lateBadge');
-    if (!tbody || !inBadge || !lateBadge) return;
+    if (!viewport || !board || !tbody || !inBadge || !lateBadge) return;
 
     function esc(value) {
       const s = String(value || '');
@@ -76,7 +108,16 @@
         const seatNumber = p.seat_number == null ? '' : String(p.seat_number);
         const seatLabel = p.seat_label || '-';
         const lateEta = p.late_eta || '-';
+        const rank = p.response_rank == null ? '' : String(p.response_rank);
+        const responseMinutes = p.response_minutes == null ? '' : String(p.response_minutes);
+        let speed = '-';
+        if (p.status === 'HOST') speed = 'Host';
+        else if (rank === '1') speed = `🥇 ${responseMinutes || '-'}m`;
+        else if (rank === '2') speed = `🥈 ${responseMinutes || '-'}m`;
+        else if (rank === '3') speed = `🥉 ${responseMinutes || '-'}m`;
+        else if (rank) speed = `${responseMinutes || '-'}m`;
         return `<tr data-status="${esc(p.status)}">
+          <td data-label="Response Time" data-rank="${esc(rank)}">${esc(speed)}</td>
           <td data-label="Name">${esc(p.name)}</td>
           <td data-label="Status">${esc(p.status)}</td>
           <td data-label="ETA">${esc(lateEta)}</td>
@@ -85,6 +126,24 @@
       }).join('');
       tbody.innerHTML = html;
       applyTableDividers();
+      fitBoard();
+    }
+
+    function fitBoard() {
+      board.style.transform = 'scale(1)';
+      board.style.marginLeft = '0px';
+      board.style.marginTop = '0px';
+
+      const availableWidth = viewport.clientWidth;
+      const availableHeight = viewport.clientHeight;
+      const naturalWidth = board.scrollWidth;
+      const naturalHeight = board.scrollHeight;
+      if (!availableWidth || !availableHeight || !naturalWidth || !naturalHeight) return;
+
+      const scale = Math.max(0.6, Math.min(availableWidth / naturalWidth, availableHeight / naturalHeight) * 0.94);
+      board.style.transform = `scale(${scale})`;
+      board.style.marginLeft = `${Math.max(0, (availableWidth - naturalWidth * scale) / 2)}px`;
+      board.style.marginTop = `${Math.max(0, (availableHeight - naturalHeight * scale) / 2)}px`;
     }
 
     async function refresh() {
@@ -102,6 +161,8 @@
 
     setInterval(refresh, 5000);
     applyTableDividers();
+    fitBoard();
+    window.addEventListener('resize', fitBoard);
     refresh();
   })();
 </script>

@@ -126,10 +126,23 @@ def thunder_bay_localize(local_dt: datetime) -> datetime:
     return local_dt.replace(tzinfo=timezone(timedelta(hours=offset_hours)))
 
 
+def thunder_bay_from_utc(dt_utc: datetime) -> datetime:
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    else:
+        dt_utc = dt_utc.astimezone(timezone.utc)
+    standard_local = (dt_utc + timedelta(hours=-5)).replace(tzinfo=None)
+    if _is_thunder_bay_dst(standard_local):
+        local_naive = (dt_utc + timedelta(hours=-4)).replace(tzinfo=None)
+        return local_naive.replace(tzinfo=timezone(timedelta(hours=-4)))
+    return standard_local.replace(tzinfo=timezone(timedelta(hours=-5)))
+
+
 def format_ts(value: str) -> str:
     try:
-        dt = datetime.fromisoformat(value)
-        return dt.strftime("%Y-%m-%d %H:%M")
+        raw = str(value or "").strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+        return thunder_bay_from_utc(dt).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return value
 
@@ -163,6 +176,20 @@ templates.env.filters["fmt_game_time"] = format_game_time
 templates.env.filters["fmt_phone"] = format_phone
 templates.env.globals["csp_nonce"] = get_request_csp_nonce
 templates.env.globals["public_base_url"] = public_base_url
+
+
+def static_asset(path: str) -> str:
+    raw = str(path or "").strip()
+    normalized = raw[1:] if raw.startswith("/") else raw
+    target = BASE_DIR / normalized
+    try:
+        version = int(target.stat().st_mtime)
+        return f"/{normalized}?v={version}"
+    except Exception:
+        return f"/{normalized}"
+
+
+templates.env.globals["static_asset"] = static_asset
 
 def _csrf_secret() -> str:
     return (os.getenv("SESSION_SECRET") or "").strip() or "dev-csrf-secret"
@@ -2158,6 +2185,12 @@ def game_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
 
 def host_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
     game_id = int(game_row["id"])
+    game_created_at = None
+    try:
+        raw_created = str(game_row["created_at"] or "").strip().replace("Z", "+00:00")
+        game_created_at = datetime.fromisoformat(raw_created)
+    except Exception:
+        game_created_at = None
     cur = conn.cursor()
     cur.execute(
         """
@@ -2170,8 +2203,33 @@ def host_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
         """,
         (game_id,),
     )
+    fetched_rows = cur.fetchall()
+    response_rank_by_id = {}
+    responder_rank = 1
+    ranked_rows = sorted(
+        fetched_rows,
+        key=lambda row: (
+            1 if (row["status"] or "").upper() == "HOST" else 0,
+            row["created_at"] or "",
+            int(row["id"]),
+        ),
+    )
+    for row in ranked_rows:
+        if (row["status"] or "").upper() == "HOST":
+            continue
+        response_rank_by_id[int(row["id"])] = responder_rank
+        responder_rank += 1
     players = []
-    for row in cur.fetchall():
+    for row in fetched_rows:
+        response_minutes = None
+        if game_created_at is not None:
+            try:
+                raw_rsvp_created = str(row["created_at"] or "").strip().replace("Z", "+00:00")
+                rsvp_created_at = datetime.fromisoformat(raw_rsvp_created)
+                delta_seconds = (rsvp_created_at - game_created_at).total_seconds()
+                response_minutes = max(0, int(delta_seconds // 60))
+            except Exception:
+                response_minutes = None
         players.append(
             {
                 "id": int(row["id"]),
@@ -2180,6 +2238,8 @@ def host_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
                 "late_eta": row["late_eta"] or "",
                 "seat_number": row["seat_number"],
                 "seat_label": seat_display(row["seat_number"], game_row["total_players"], game_uses_multiple_tables(game_row)) or "-",
+                "response_rank": response_rank_by_id.get(int(row["id"])),
+                "response_minutes": response_minutes,
             }
         )
     in_count = sum(1 for p in players if p["status"] == "IN")
