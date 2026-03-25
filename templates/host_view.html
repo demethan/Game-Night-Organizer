@@ -37,13 +37,19 @@
                 {% if p['status'] == 'HOST' %}
                 Host
                 {% elif p['response_rank'] == 1 %}
-                🥇 {{ p['response_minutes'] if p['response_minutes'] is not none else '-' }}m
+                🥇 {{ p['response_elapsed_ms'] if p['response_elapsed_ms'] is not none else '' }}
                 {% elif p['response_rank'] == 2 %}
-                🥈 {{ p['response_minutes'] if p['response_minutes'] is not none else '-' }}m
+                🥈 {{ p['response_elapsed_ms'] if p['response_elapsed_ms'] is not none else '' }}
                 {% elif p['response_rank'] == 3 %}
-                🥉 {{ p['response_minutes'] if p['response_minutes'] is not none else '-' }}m
+                🥉 {{ p['response_elapsed_ms'] if p['response_elapsed_ms'] is not none else '' }}
+                {% elif p['is_slowest_response'] %}
+                🐢 {{ p['response_elapsed_ms'] if p['response_elapsed_ms'] is not none else '' }}
+                {% elif p['response_elapsed_ms'] is not none and p['response_elapsed_ms'] < 600000 %}
+                🐆 {{ p['response_elapsed_ms'] }}
+                {% elif p['response_elapsed_ms'] is not none and p['response_elapsed_ms'] < 3600000 %}
+                🐎 {{ p['response_elapsed_ms'] }}
                 {% elif p['response_rank'] %}
-                {{ p['response_minutes'] if p['response_minutes'] is not none else '-' }}m
+                {{ p['response_elapsed_ms'] if p['response_elapsed_ms'] is not none else '' }}
                 {% else %}
                 -
                 {% endif %}
@@ -80,6 +86,14 @@
         .replace(/'/g, '&#39;');
     }
 
+    function formatResponseElapsed(ms) {
+      const totalMs = Number(ms);
+      if (!Number.isFinite(totalMs) || totalMs < 0) return '-';
+      const minutes = Math.floor(totalMs / 60000);
+      const seconds = (totalMs % 60000) / 1000;
+      return `${minutes}m${seconds.toFixed(1)}s`;
+    }
+
     function tableGroupFromSeatLabel(label) {
       const text = String(label || '').trim();
       if (!text || text === '-') return '';
@@ -109,13 +123,17 @@
         const seatLabel = p.seat_label || '-';
         const lateEta = p.late_eta || '-';
         const rank = p.response_rank == null ? '' : String(p.response_rank);
-        const responseMinutes = p.response_minutes == null ? '' : String(p.response_minutes);
+        const responseElapsedMs = p.response_elapsed_ms == null ? '' : String(p.response_elapsed_ms);
+        const responseElapsedMsNumber = p.response_elapsed_ms == null ? null : Number(p.response_elapsed_ms);
         let speed = '-';
         if (p.status === 'HOST') speed = 'Host';
-        else if (rank === '1') speed = `🥇 ${responseMinutes || '-'}m`;
-        else if (rank === '2') speed = `🥈 ${responseMinutes || '-'}m`;
-        else if (rank === '3') speed = `🥉 ${responseMinutes || '-'}m`;
-        else if (rank) speed = `${responseMinutes || '-'}m`;
+        else if (rank === '1') speed = `🥇 ${formatResponseElapsed(responseElapsedMs)}`;
+        else if (rank === '2') speed = `🥈 ${formatResponseElapsed(responseElapsedMs)}`;
+        else if (rank === '3') speed = `🥉 ${formatResponseElapsed(responseElapsedMs)}`;
+        else if (p.is_slowest_response) speed = `🐢 ${formatResponseElapsed(responseElapsedMs)}`;
+        else if (Number.isFinite(responseElapsedMsNumber) && responseElapsedMsNumber < 600000) speed = `🐆 ${formatResponseElapsed(responseElapsedMs)}`;
+        else if (Number.isFinite(responseElapsedMsNumber) && responseElapsedMsNumber < 3600000) speed = `🐎 ${formatResponseElapsed(responseElapsedMs)}`;
+        else if (rank) speed = `${formatResponseElapsed(responseElapsedMs)}`;
         return `<tr data-status="${esc(p.status)}">
           <td data-label="Response Time" data-rank="${esc(rank)}">${esc(speed)}</td>
           <td data-label="Name">${esc(p.name)}</td>
@@ -160,6 +178,14 @@
     }
 
     setInterval(refresh, 5000);
+    tbody.querySelectorAll('td[data-label="Response Time"]').forEach((cell) => {
+      const text = (cell.textContent || '').trim();
+      if (!text || text === '-' || text === 'Host') return;
+      if (text.startsWith('🥇')) cell.textContent = `🥇 ${formatResponseElapsed(text.replace('🥇', '').trim())}`;
+      else if (text.startsWith('🥈')) cell.textContent = `🥈 ${formatResponseElapsed(text.replace('🥈', '').trim())}`;
+      else if (text.startsWith('🥉')) cell.textContent = `🥉 ${formatResponseElapsed(text.replace('🥉', '').trim())}`;
+      else cell.textContent = formatResponseElapsed(text);
+    });
     applyTableDividers();
     fitBoard();
     window.addEventListener('resize', fitBoard);

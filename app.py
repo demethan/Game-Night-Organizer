@@ -2217,17 +2217,18 @@ def host_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
             continue
         response_rank_by_id[int(row["id"])] = responder_rank
         responder_rank += 1
+    slowest_response_rank = responder_rank - 1 if responder_rank > 1 else None
     players = []
     for row in fetched_rows:
-        response_minutes = None
+        response_elapsed_ms = None
         if game_created_at is not None:
             try:
                 raw_rsvp_created = str(row["created_at"] or "").strip().replace("Z", "+00:00")
                 rsvp_created_at = datetime.fromisoformat(raw_rsvp_created)
-                delta_seconds = (rsvp_created_at - game_created_at).total_seconds()
-                response_minutes = max(0, int(delta_seconds // 60))
+                delta_ms = int((rsvp_created_at - game_created_at).total_seconds() * 1000)
+                response_elapsed_ms = max(0, delta_ms)
             except Exception:
-                response_minutes = None
+                response_elapsed_ms = None
         players.append(
             {
                 "id": int(row["id"]),
@@ -2237,7 +2238,8 @@ def host_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
                 "seat_number": row["seat_number"],
                 "seat_label": seat_display(row["seat_number"], game_row["total_players"], game_uses_multiple_tables(game_row)) or "-",
                 "response_rank": response_rank_by_id.get(int(row["id"])),
-                "response_minutes": response_minutes,
+                "response_elapsed_ms": response_elapsed_ms,
+                "is_slowest_response": response_rank_by_id.get(int(row["id"])) == slowest_response_rank,
             }
         )
     in_count = sum(1 for p in players if p["status"] == "IN")
