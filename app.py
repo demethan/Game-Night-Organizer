@@ -925,9 +925,7 @@ def seat_threshold_reached(conn: sqlite3.Connection, game_id: int, total_players
     cur = conn.cursor()
     cur.execute("SELECT manual_seat_assignment FROM games WHERE id = ?", (game_id,))
     game_row = cur.fetchone()
-    if game_row and int(game_row["manual_seat_assignment"] or 0) == 1:
-        return True
-    return (count_in(conn, game_id) / total_players) >= 0.8
+    return bool(game_row and int(game_row["manual_seat_assignment"] or 0) == 1)
 
 
 def assign_seats_if_ready(conn: sqlite3.Connection, game_id: int, total_players: int) -> None:
