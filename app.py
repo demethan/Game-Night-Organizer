@@ -1789,6 +1789,118 @@ def filtered_game_broadcast_recipients(
     return phones
 
 
+_BROADCAST_TEMPLATE_TOKEN_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
+
+
+def organizer_broadcast_variables(game_row) -> list[dict[str, str]]:
+    return [
+        {"token": "{{name}}", "label": "Name"},
+        {"token": "{{status}}", "label": "Status"},
+        {"token": "{{seat}}", "label": "Seat"},
+        {"token": "{{table}}", "label": "Table"},
+        {"token": "{{late_eta}}", "label": "Late ETA"},
+        {"token": "{{game}}", "label": "Game"},
+        {"token": "{{game_date}}", "label": "Date"},
+        {"token": "{{game_time}}", "label": "Time"},
+        {"token": "{{game_datetime}}", "label": "DateTime"},
+        {"token": "{{location}}", "label": "Location"},
+        {"token": "{{rsvp_link}}", "label": "RSVP Link"},
+        {"token": "{{standby_position}}", "label": "Standby #"},
+    ]
+
+
+def broadcast_message_context(conn: sqlite3.Connection, request: Request, game_row, phone_10: str) -> dict[str, str]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT name, status, late_eta, seat_number
+        FROM rsvps
+        WHERE game_id = ? AND phone = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (int(game_row["id"]), phone_10),
+    )
+    rsvp_row = cur.fetchone()
+    cur.execute(
+        """
+        SELECT id, name, created_at
+        FROM standby
+        WHERE game_id = ? AND phone = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (int(game_row["id"]), phone_10),
+    )
+    standby_row = cur.fetchone()
+
+    name = ""
+    status = ""
+    late_eta = ""
+    seat_label = ""
+    table_label = ""
+    standby_position = ""
+
+    if rsvp_row:
+        name = (rsvp_row["name"] or "").strip()
+        status = (rsvp_row["status"] or "").strip().upper()
+        late_eta = format_game_time(rsvp_row["late_eta"]) if (rsvp_row["late_eta"] or "").strip() else ""
+        seat_label = (
+            seat_display(
+                rsvp_row["seat_number"],
+                int(game_row["total_players"]),
+                game_uses_multiple_tables(game_row),
+            )
+            or ""
+        )
+        table_label, _ = seat_assignment(
+            rsvp_row["seat_number"],
+            int(game_row["total_players"]),
+            game_uses_multiple_tables(game_row),
+        )
+        table_label = table_label or ""
+    elif standby_row:
+        name = (standby_row["name"] or "").strip()
+        status = "STANDBY"
+        cur.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM standby
+            WHERE game_id = ?
+              AND (
+                datetime(created_at) < datetime(?)
+                OR (created_at = ? AND id <= ?)
+              )
+            """,
+            (int(game_row["id"]), standby_row["created_at"], standby_row["created_at"], int(standby_row["id"])),
+        )
+        standby_position = str(int(cur.fetchone()["c"] or 0))
+
+    game_time = format_game_time(game_row["game_time"])
+    return {
+        "name": name,
+        "status": status,
+        "seat": seat_label,
+        "table": table_label,
+        "late_eta": late_eta,
+        "game": str(game_row["title"] or ""),
+        "game_date": str(game_row["game_date"] or ""),
+        "game_time": game_time,
+        "game_datetime": f"{game_row['game_date']} at {game_time}",
+        "location": str(game_row["location"] or ""),
+        "rsvp_link": f"{public_base_url(request)}/game?g={game_row['code']}",
+        "standby_position": standby_position,
+    }
+
+
+def render_broadcast_message(raw_message: str, context: dict[str, str]) -> str:
+    def repl(match: re.Match[str]) -> str:
+        key = (match.group(1) or "").strip().lower()
+        return str(context.get(key, ""))
+
+    return _BROADCAST_TEMPLATE_TOKEN_RE.sub(repl, raw_message or "")
+
+
 def maybe_send_choice_confirmation_sms(conn: sqlite3.Connection, game_row, phone_10: Optional[str], status: str, late_eta: Optional[str], seat_label: Optional[str]) -> None:
     if not phone_10:
         return
@@ -2645,6 +2757,8 @@ def handle_inbound_sms_command(conn: sqlite3.Connection, request: Request, phone
     if upper == "STATUS":
         return build_inbound_status_text(conn, phone_10)
     if upper == "VERIFY":
+        if phone_is_globally_verified(conn, phone_10):
+            return "This number is already verified for invitee identity."
         token = create_invitee_verify_link_token(phone_10)
         verify_link = f"{public_base_url(request)}/invitee/verify?t={urllib.parse.quote(token)}"
         return f"Open this link to verify and sync your invite identity: {verify_link}"
@@ -3598,6 +3712,7 @@ def view_game(request: Request, game_id: int):
 
     in_count = count_in(conn, game_id)
     broadcast_table_options = table_labels(len(table_sizes(game["total_players"], True))) if game_uses_multiple_tables(game) else []
+    broadcast_variables = organizer_broadcast_variables(game)
     conn.close()
 
     return templates.TemplateResponse(
@@ -3612,6 +3727,7 @@ def view_game(request: Request, game_id: int):
             "co_organizers": co_organizers,
             "invitee_directory": invitee_directory,
             "broadcast_table_options": broadcast_table_options,
+            "broadcast_variables": broadcast_variables,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
@@ -3769,8 +3885,9 @@ def organizer_broadcast_text(
         sent_count = 0
         blocked_count = 0
         last_error = None
-        body = f"{game['title']}: {raw_message}"
         for phone in recipients:
+            rendered_message = render_broadcast_message(raw_message, broadcast_message_context(conn, request, game, phone))
+            body = f"{game['title']}: {rendered_message}"
             sent, result = send_twilio_sms_guarded(conn, int(game["id"]), phone, body, "organizer_broadcast")
             if sent:
                 sent_count += 1
@@ -4361,6 +4478,8 @@ def game_by_code(request: Request, code: str):
     in_players = [row["name"] for row in cur.fetchall()]
     cur.execute("SELECT name FROM rsvps WHERE game_id = ? AND status = 'LATE' ORDER BY created_at ASC", (game["id"],))
     late_players = [row["name"] for row in cur.fetchall()]
+    cur.execute("SELECT name FROM rsvps WHERE game_id = ? AND status = 'OUT' ORDER BY created_at ASC", (game["id"],))
+    out_players = [row["name"] for row in cur.fetchall()]
     cur.execute("SELECT COUNT(*) AS c FROM rsvps WHERE game_id = ? AND status = 'OUT'", (game["id"],))
     out_count = int(cur.fetchone()["c"])
     roster_players = invitee_roster_payload(conn, game)
@@ -4392,6 +4511,7 @@ def game_by_code(request: Request, code: str):
             "late_players": late_players,
             "host_name": host_name,
             "out_count": out_count,
+            "out_players": out_players,
             "roster_players": roster_players,
             "verify_required": request.query_params.get("verify") == "1",
             "twilio_enabled": should_verify_phone(game),

@@ -26,6 +26,70 @@
 .invite-info-inline:hover {
   color: #e2e8f0;
 }
+.invite-stats {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+.invite-stats .invite-stat,
+.invite-stats .invite-stat-button {
+  flex: 1 1 0;
+}
+.invite-stat-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 74px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #f8fafc;
+  cursor: pointer;
+  text-align: left;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+.invite-stat-button:hover {
+  background: rgba(30, 41, 59, 0.9);
+  border-color: rgba(148, 163, 184, 0.38);
+}
+.invite-stat-button[aria-expanded="true"] {
+  background: rgba(51, 65, 85, 0.94);
+  border-color: rgba(245, 158, 11, 0.52);
+}
+.invite-stat-button strong,
+.invite-stat-button .invite-stat-label {
+  color: inherit;
+}
+.invite-stat-button[aria-disabled="true"] {
+  cursor: default;
+}
+.invite-stat-button[aria-disabled="true"]:hover {
+  background: rgba(15, 23, 42, 0.72);
+  border-color: rgba(148, 163, 184, 0.24);
+}
+.invite-out-list {
+  margin-top: 10px;
+}
+.invite-player-list {
+  margin-top: 10px;
+}
+.invite-actions-top {
+  display: flex;
+  gap: 12px;
+  margin: 0 0 16px;
+}
+.invite-actions-top .invite-btn {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 12px 18px 13px;
+  line-height: 1;
+}
 @media (max-width: 640px) {
   .topbar {
     display: none;
@@ -52,23 +116,25 @@
 </p>
 <div class="card invite-status-card">
   <div class="invite-stats">
+    <button type="button" class="invite-stat invite-stat-button" id="inToggleBtn" aria-expanded="true" aria-controls="inListWrap">
+      <strong>IN:{{ (in_players|length) + (late_players|length) + (1 if host_name else 0) }}</strong>
+    </button>
+    {% if out_count > 0 %}
+    <button type="button" class="invite-stat invite-stat-button" id="outToggleBtn" aria-expanded="false" aria-controls="outListWrap">
+      <strong>OUT:{{ out_count }}</strong>
+    </button>
+    {% else %}
     <div class="invite-stat">
-      <span class="invite-stat-label">IN</span>
-      <strong>{{ (in_players|length) + (late_players|length) + (1 if host_name else 0) }}</strong>
+      <strong>OUT:{{ out_count }}</strong>
     </div>
-    <div class="invite-stat">
-      <span class="invite-stat-label">OUT</span>
-      <strong>{{ out_count }}</strong>
-    </div>
-    <div class="invite-stat">
-      <span class="invite-stat-label">SEATS</span>
-      <strong>{{ game['total_players'] }}</strong>
+    {% endif %}
+    <div class="invite-stat invite-stat-button" aria-disabled="true">
+      <strong>SEATS:{{ game['total_players'] }}</strong>
     </div>
   </div>
   {% if (in_players and in_players|length > 0) or (late_players and late_players|length > 0) or host_name %}
-  <details class="invite-details">
-    <summary>View player list</summary>
-    <div class="row" style="margin-top:10px;">
+  <div class="invite-player-list" id="inListWrap">
+    <div class="row">
       {% if host_name %}
         <span class="badge">🏠 {{ host_name }}</span>
       {% endif %}
@@ -79,7 +145,16 @@
         <span class="badge">⏰ {{ name }}</span>
       {% endfor %}
     </div>
-  </details>
+  </div>
+  {% endif %}
+  {% if out_players and out_players|length > 0 %}
+  <div class="invite-out-list" id="outListWrap" style="display:none;">
+    <div class="row">
+      {% for name in out_players %}
+        <span class="badge">{{ name }}</span>
+      {% endfor %}
+    </div>
+  </div>
   {% endif %}
 </div>
 <div class="invite-actions invite-actions-top">
@@ -195,7 +270,35 @@ window._verifySendCooldownUntil = window._verifySendCooldownUntil || 0;
   const alreadyVotedBox = document.getElementById('alreadyVoted');
   const alreadyVotedText = document.getElementById('alreadyVotedText');
   const inviteActions = document.querySelector('.invite-actions-top');
-  const rosterDetails = document.querySelector('.invite-details');
+  const inToggleBtn = document.getElementById('inToggleBtn');
+  const inListWrap = document.getElementById('inListWrap');
+  const outToggleBtn = document.getElementById('outToggleBtn');
+  const outListWrap = document.getElementById('outListWrap');
+
+  if (inToggleBtn && inListWrap) {
+    inToggleBtn.addEventListener('click', () => {
+      const isOpen = inListWrap.style.display !== 'none';
+      const nextOpen = !isOpen;
+      inListWrap.style.display = nextOpen ? '' : 'none';
+      inToggleBtn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+      if (outToggleBtn && outListWrap && nextOpen) {
+        outListWrap.style.display = 'none';
+        outToggleBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+  if (outToggleBtn && outListWrap) {
+    outToggleBtn.addEventListener('click', () => {
+      const isOpen = outListWrap.style.display !== 'none';
+      const nextOpen = !isOpen;
+      outListWrap.style.display = nextOpen ? '' : 'none';
+      outToggleBtn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+      if (inToggleBtn && inListWrap && nextOpen) {
+        inListWrap.style.display = 'none';
+        inToggleBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
 
   function createToken() {
     if (window.crypto && window.crypto.getRandomValues) {
@@ -265,9 +368,6 @@ window._verifySendCooldownUntil = window._verifySendCooldownUntil || 0;
           const statusLabel = responseStatus === 'HOST' ? 'IN' : responseStatus;
           alreadyVotedText.textContent = `Current status: ${statusLabel}. You can change your response below.`;
         }
-      }
-      if (rosterDetails && responseStatus) {
-        rosterDetails.open = true;
       }
       updateInviteVerifyBadge();
     } catch (e) {
