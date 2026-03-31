@@ -240,6 +240,7 @@
 <script nonce="{{ csp_nonce(request) }}">
 window._serverVerifiedPhone = window._serverVerifiedPhone || null;
 window._verifySendCooldownUntil = window._verifySendCooldownUntil || 0;
+const verifySenderHint = {{ (verify_sender_hint or 'our text number') | tojson }};
 (function() {
   const flash = document.getElementById('inviteFlashError');
   if (!flash) return;
@@ -509,7 +510,7 @@ async function sendVerifyCode() {
       if (verifyMessage) verifyMessage.textContent = `Phone ${maskPhoneForUi(phone)} is already verified.`;
       return 'verified';
     }
-    if (verifyMessage) verifyMessage.textContent = `Code sent to ${maskPhoneForUi(phone)}. Enter the 6-digit code sent by text.`;
+    if (verifyMessage) verifyMessage.textContent = `Check your texts on ${maskPhoneForUi(phone)}. The 6-digit code should come from ${verifySenderHint}.`;
     startVerifySendCooldown(30);
     openVerifyModal();
     return 'started';

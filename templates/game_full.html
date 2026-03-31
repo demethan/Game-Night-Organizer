@@ -85,6 +85,7 @@
 <script nonce="{{ csp_nonce(request) }}">
 window._standbyServerVerifiedPhone = window._standbyServerVerifiedPhone || null;
 window._standbyVerifySendCooldownUntil = window._standbyVerifySendCooldownUntil || 0;
+const standbyVerifySenderHint = {{ (verify_sender_hint or 'our text number') | tojson }};
 (function() {
   const flash = document.getElementById('inviteFullFlashError');
   if (!flash) return;
@@ -385,7 +386,7 @@ async function sendStandbyVerifyCode() {
       if (verifyMessage) verifyMessage.textContent = `Phone ${maskStandbyPhoneForUi(phone)} is already verified.`;
       return 'verified';
     }
-    if (verifyMessage) verifyMessage.textContent = `Code sent to ${maskStandbyPhoneForUi(phone)}. Enter the 6-digit code sent by text.`;
+    if (verifyMessage) verifyMessage.textContent = `Check your texts on ${maskStandbyPhoneForUi(phone)}. The 6-digit code should come from ${standbyVerifySenderHint}.`;
     startStandbyVerifySendCooldown(30);
     openStandbyVerifyModal();
     return 'started';

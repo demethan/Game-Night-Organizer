@@ -1090,6 +1090,16 @@ def twilio_enabled() -> bool:
     return bool(cfg["account_sid"] and cfg["auth_token"] and has_sender)
 
 
+def verification_sender_hint() -> str:
+    sender = (twilio_config().get("from_number") or "").strip()
+    if not sender:
+        return "our text number"
+    try:
+        return format_phone(sender)
+    except Exception:
+        return sender
+
+
 def sms_send_enabled_globally() -> bool:
     return (os.getenv("SMS_SEND_ENABLED", "true").strip().lower() in {"1", "true", "on", "yes"})
 
@@ -4495,6 +4505,7 @@ def game_by_code(request: Request, code: str):
                 "title": "RSVP Here",
                 "verify_required": request.query_params.get("verify") == "1",
                 "twilio_enabled": should_verify_phone(game),
+                "verify_sender_hint": verification_sender_hint(),
                 "roster_players": roster_players,
                 "invitee_token_seed": invitee_token_seed,
             },
@@ -4515,6 +4526,7 @@ def game_by_code(request: Request, code: str):
             "roster_players": roster_players,
             "verify_required": request.query_params.get("verify") == "1",
             "twilio_enabled": should_verify_phone(game),
+            "verify_sender_hint": verification_sender_hint(),
             "invitee_token_seed": invitee_token_seed,
         },
     )
@@ -4699,6 +4711,7 @@ def rsvp_game(
                     "game": game,
                     "verify_required": False,
                     "twilio_enabled": should_verify_phone(game),
+                    "verify_sender_hint": verification_sender_hint(),
                     "roster_players": roster_players,
                 },
             )
