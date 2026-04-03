@@ -63,6 +63,7 @@ TRUSTED_DEVICE_DAYS = 30
 TRUSTED_DEVICE_COOKIE = "poker_trusted_device"
 INVITEE_TOKEN_COOKIE = "poker_invitee_token"
 INVITEE_VERIFY_LINK_TTL_MINUTES = 20
+ORGANIZER_INVITEE_CONSENT_STATUSES = {"unknown", "agreed", "pending", "disagreed"}
 CO_ORG_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$")
 CO_ORG_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 TOTP_ISSUER = "Poker Invite Manager"
@@ -676,6 +677,20 @@ def init_db():
     )
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_organizer_invitees_org_phone ON organizer_invitees(organizer_id, phone)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_organizer_invitees_phone ON organizer_invitees(phone)")
+    cur.execute("PRAGMA table_info(organizer_invitees)")
+    invitee_columns = {str(row[1]) for row in cur.fetchall()}
+    if "consent_status" not in invitee_columns:
+        cur.execute("ALTER TABLE organizer_invitees ADD COLUMN consent_status TEXT NOT NULL DEFAULT 'unknown'")
+    if "consent_recorded_at" not in invitee_columns:
+        cur.execute("ALTER TABLE organizer_invitees ADD COLUMN consent_recorded_at TEXT")
+    if "consent_source" not in invitee_columns:
+        cur.execute("ALTER TABLE organizer_invitees ADD COLUMN consent_source TEXT")
+    if "non_commercial_only" not in invitee_columns:
+        cur.execute("ALTER TABLE organizer_invitees ADD COLUMN non_commercial_only INTEGER NOT NULL DEFAULT 0")
+    if "consent_updated_at" not in invitee_columns:
+        cur.execute("ALTER TABLE organizer_invitees ADD COLUMN consent_updated_at TEXT")
+    if "consent_request_sent_at" not in invitee_columns:
+        cur.execute("ALTER TABLE organizer_invitees ADD COLUMN consent_request_sent_at TEXT")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS organizer_invitee_lists (
@@ -715,6 +730,22 @@ def init_db():
         )
         """
     )
+    cur.execute("PRAGMA table_info(global_invitees)")
+    global_invitee_columns = {str(row[1]) for row in cur.fetchall()}
+    if "consent_status" not in global_invitee_columns:
+        cur.execute("ALTER TABLE global_invitees ADD COLUMN consent_status TEXT NOT NULL DEFAULT 'unknown'")
+    if "consent_recorded_at" not in global_invitee_columns:
+        cur.execute("ALTER TABLE global_invitees ADD COLUMN consent_recorded_at TEXT")
+    if "consent_source" not in global_invitee_columns:
+        cur.execute("ALTER TABLE global_invitees ADD COLUMN consent_source TEXT")
+    if "non_commercial_only" not in global_invitee_columns:
+        cur.execute("ALTER TABLE global_invitees ADD COLUMN non_commercial_only INTEGER NOT NULL DEFAULT 0")
+    if "consent_updated_at" not in global_invitee_columns:
+        cur.execute("ALTER TABLE global_invitees ADD COLUMN consent_updated_at TEXT")
+    if "consent_request_sent_at" not in global_invitee_columns:
+        cur.execute("ALTER TABLE global_invitees ADD COLUMN consent_request_sent_at TEXT")
+    if "consent_request_by_name" not in global_invitee_columns:
+        cur.execute("ALTER TABLE global_invitees ADD COLUMN consent_request_by_name TEXT")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS invitee_browser_tokens (
@@ -1164,22 +1195,54 @@ def invite_link(request: Request, code: str) -> str:
     return f"{public_base_url(request)}/game?g={code}"
 
 
-def build_invite_sms_text(request: Request, game_row, seat_label: Optional[str]) -> str:
+def game_host_name(conn: sqlite3.Connection, game_id: int, fallback: Optional[str] = None) -> Optional[str]:
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM rsvps WHERE game_id = ? AND status = 'HOST' ORDER BY created_at ASC LIMIT 1", (int(game_id),))
+    row = cur.fetchone()
+    host_name = (row["name"] or "").strip() if row and row["name"] else ""
+    if host_name:
+        return host_name
+    return (fallback or "").strip() or None
+
+
+def build_invite_sms_text(request: Request, game_row, seat_label: Optional[str], host_name: Optional[str] = None) -> str:
     lines = [
         str(game_row["title"]),
+        f"Hosted by {host_name}" if (host_name or "").strip() else None,
         f"When: {game_row['game_date']} at {format_game_time(game_row['game_time'])}",
         f"Where: {game_row['location']}",
+        "",
+        "Text back: IN, OUT, or LATE 7:30PM",
     ]
     if seat_label:
         lines.append(f"Seat: {seat_label}")
+    lines.append("")
     lines.append(invite_link(request, game_row["code"]))
-    return "\n".join(lines)
+    return "\n".join([line for line in lines if line is not None])
 
 
 def send_game_invite_sms(conn: sqlite3.Connection, request: Request, game_row, phone_10: Optional[str]) -> tuple[bool, str]:
     if not phone_10:
         return False, "Missing phone"
-    body = build_invite_sms_text(request, game_row, None)
+    global_row = global_invitee_row(conn, phone_10)
+    if global_row and int(global_row["non_commercial_only"] or 0) == 1:
+        consent_status = str(global_row["consent_status"] or "unknown").strip().lower()
+        organizer_name = game_row["organizer_name"] if "organizer_name" in game_row.keys() else ""
+        if consent_status == "disagreed":
+            return False, "invitee_disagreed"
+        if consent_status != "agreed":
+            if not (global_row["consent_request_sent_at"] or "").strip():
+                sent, _ = send_invitee_consent_request_sms(
+                    conn,
+                    organizer_name,
+                    phone_10,
+                    game_id=int(game_row["id"]),
+                )
+                if sent:
+                    return False, "pending_consent"
+            return False, "pending_consent"
+    host_name = game_host_name(conn, int(game_row["id"]), game_row["organizer_name"] if "organizer_name" in game_row.keys() else None)
+    body = build_invite_sms_text(request, game_row, None, host_name)
     return send_twilio_sms_guarded(conn, int(game_row["id"]), phone_10, body, "organizer_text")
 
 
@@ -1536,6 +1599,160 @@ def organizer_invitee_lists_with_members(conn: sqlite3.Connection, organizer_id:
         )
         entry["members"] = [dict(row) for row in cur.fetchall()]
     return lists
+
+
+def organizer_invitee_directory(conn: sqlite3.Connection, organizer_id: int, query: str = "") -> list[dict]:
+    cur = conn.cursor()
+    base_sql = """
+        SELECT organizer_invitees.id, organizer_invitees.name, organizer_invitees.phone,
+               organizer_invitees.created_at, organizer_invitees.updated_at, organizer_invitees.last_seen_at,
+               COALESCE(g.consent_status, 'unknown') AS consent_status,
+               COALESCE(g.non_commercial_only, 0) AS non_commercial_only,
+               g.consent_recorded_at AS consent_recorded_at,
+               g.consent_source AS consent_source,
+               g.consent_updated_at AS consent_updated_at,
+               g.consent_request_sent_at AS consent_request_sent_at
+        FROM organizer_invitees
+        LEFT JOIN global_invitees g ON g.phone = organizer_invitees.phone
+        WHERE organizer_invitees.organizer_id = ?
+    """
+    params: list = [int(organizer_id)]
+    if str(query or "").strip():
+        like = f"%{str(query).strip().lower()}%"
+        base_sql += " AND (LOWER(organizer_invitees.name) LIKE ? OR organizer_invitees.phone LIKE ?)"
+        params.extend([like, like])
+    base_sql += " ORDER BY LOWER(organizer_invitees.name) ASC, datetime(organizer_invitees.last_seen_at) DESC, organizer_invitees.id ASC LIMIT 500"
+    cur.execute(base_sql, tuple(params))
+    return [dict(row) for row in cur.fetchall()]
+
+
+def organizer_invitee_row(conn: sqlite3.Connection, organizer_id: int, phone_10: Optional[str]) -> Optional[sqlite3.Row]:
+    phone = (phone_10 or "").strip()
+    if not phone:
+        return None
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM organizer_invitees
+        WHERE organizer_id = ? AND phone = ?
+        LIMIT 1
+        """,
+        (int(organizer_id), phone),
+    )
+    return cur.fetchone()
+
+
+def global_invitee_row(conn: sqlite3.Connection, phone_10: Optional[str]) -> Optional[sqlite3.Row]:
+    phone = (phone_10 or "").strip()
+    if not phone:
+        return None
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM global_invitees WHERE phone = ? LIMIT 1", (phone,))
+    return cur.fetchone()
+
+
+def set_global_invitee_consent(
+    conn: sqlite3.Connection,
+    phone_10: str,
+    *,
+    status: str,
+    source: str,
+    non_commercial_only: Optional[bool] = None,
+    request_sent: bool = False,
+    request_by_name: Optional[str] = None,
+) -> None:
+    cleaned_status = (status or "").strip().lower()
+    if cleaned_status not in ORGANIZER_INVITEE_CONSENT_STATUSES:
+        raise ValueError("Invalid consent status")
+    now = _utc_now_iso()
+    cur = conn.cursor()
+    fields = [
+        "consent_status = ?",
+        "consent_source = ?",
+        "consent_updated_at = ?",
+    ]
+    params: list = [cleaned_status, source, now]
+    if cleaned_status in {"agreed", "disagreed"}:
+        fields.append("consent_recorded_at = ?")
+        params.append(now)
+    if non_commercial_only is not None:
+        fields.append("non_commercial_only = ?")
+        params.append(1 if non_commercial_only else 0)
+    if request_sent:
+        fields.append("consent_request_sent_at = ?")
+        params.append(now)
+    if request_by_name is not None:
+        fields.append("consent_request_by_name = ?")
+        params.append((request_by_name or "").strip()[:80])
+    params.append(phone_10)
+    cur.execute(
+        f"""
+        UPDATE global_invitees
+        SET {", ".join(fields)}
+        WHERE phone = ?
+        """,
+        tuple(params),
+    )
+
+
+def build_invitee_consent_request_sms(organizer_name: str) -> str:
+    display_name = (organizer_name or "").strip() or "An organizer"
+    return (
+        f"Organizer {display_name} added you to Poker Invite Manager for private poker game invites. "
+        "Reply AGREE to complete or DISAGREE if this was a mistake."
+    )
+
+
+def send_invitee_consent_request_sms(
+    conn: sqlite3.Connection,
+    organizer_name: str,
+    phone_10: str,
+    *,
+    game_id: Optional[int] = None,
+) -> tuple[bool, str]:
+    body = build_invitee_consent_request_sms(organizer_name)
+    sent, result = send_twilio_sms_guarded(conn, game_id, phone_10, body, "invitee_consent_request")
+    if sent:
+        set_global_invitee_consent(
+            conn,
+            phone_10,
+            status="pending",
+            source="organizer_assertion_sms",
+            non_commercial_only=True,
+            request_sent=True,
+            request_by_name=organizer_name,
+        )
+    return sent, result
+
+
+def mark_global_invitee_pending_private_use(
+    conn: sqlite3.Connection,
+    organizer_name: str,
+    phone_10: str,
+) -> tuple[bool, str]:
+    existing = global_invitee_row(conn, phone_10)
+    if existing:
+        status = str(existing["consent_status"] or "unknown").strip().lower()
+        if status == "agreed" and int(existing["non_commercial_only"] or 0) == 1:
+            return False, "already_agreed"
+    return send_invitee_consent_request_sms(conn, organizer_name, phone_10)
+
+
+def latest_pending_global_invitee_for_phone(conn: sqlite3.Connection, phone_10: str) -> Optional[sqlite3.Row]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM global_invitees
+        WHERE phone = ?
+          AND COALESCE(consent_status, 'unknown') = 'pending'
+        ORDER BY datetime(COALESCE(consent_request_sent_at, updated_at, created_at)) DESC, id DESC
+        LIMIT 1
+        """,
+        (phone_10,),
+    )
+    return cur.fetchone()
 
 
 def get_invitee_list_for_owner(conn: sqlite3.Connection, organizer_id: int, list_id: int):
@@ -2717,7 +2934,7 @@ def best_game_code_for_phone(conn: sqlite3.Connection, phone_10: str) -> Optiona
 
 def build_inbound_help_text() -> str:
     return (
-        "Commands: MENU, STATUS, VERIFY, IN, OUT, LATE 7:30PM, STANDBY. "
+        "Commands: MENU, STATUS, VERIFY, AGREE, DISAGREE, IN, OUT, LATE 7:30PM, STANDBY. "
         "If your number is linked to more than one current game, open the RSVP link to choose the game."
     )
 
@@ -2776,6 +2993,10 @@ def interpret_inbound_sms_text(raw_text: str) -> str:
         return "STATUS"
     if text == "VERIFY":
         return "VERIFY"
+    if text == "AGREE":
+        return "AGREE"
+    if text in {"DISAGREE", "DISAGREED"}:
+        return "DISAGREE"
     if text in {"IN", "OUT", "STANDBY"} or text.startswith("LATE "):
         return text
 
@@ -2784,6 +3005,10 @@ def interpret_inbound_sms_text(raw_text: str) -> str:
 
     if " VERIFY " in compact or " VERIFIED " in compact or " VERIFICATION " in compact:
         return "VERIFY"
+    if " AGREE " in compact or " I AGREE " in compact:
+        return "AGREE"
+    if " DISAGREE " in compact or " I DISAGREE " in compact:
+        return "DISAGREE"
     if " STATUS " in compact or " WHAT IS MY STATUS " in compact or " AM I IN " in compact:
         return "STATUS"
     if " STANDBY " in compact or " WAITLIST " in compact or " WAIT LIST " in compact:
@@ -3060,6 +3285,22 @@ def handle_inbound_sms_command(conn: sqlite3.Connection, request: Request, phone
         token = create_invitee_verify_link_token(phone_10)
         verify_link = f"{public_base_url(request)}/invitee/verify?t={urllib.parse.quote(token)}"
         return f"Open this link to verify and sync your invite identity: {verify_link}"
+    if upper in {"AGREE", "DISAGREE"}:
+        pending_row = latest_pending_global_invitee_for_phone(conn, phone_10)
+        if not pending_row:
+            return "There is no pending organizer confirmation for this number."
+        consent_status = "agreed" if upper == "AGREE" else "disagreed"
+        set_global_invitee_consent(
+            conn,
+            phone_10,
+            status=consent_status,
+            source=f"sms_{consent_status}",
+            non_commercial_only=True,
+        )
+        organizer_name = (pending_row["consent_request_by_name"] or "").strip() or "that organizer"
+        if consent_status == "agreed":
+            return f"Confirmed. {organizer_name} can use this number for private Poker Invite Manager game invites."
+        return f"Okay. {organizer_name} should not use this number for Poker Invite Manager invites."
     command = upper.split(" ", 1)[0]
     if command not in {"IN", "OUT", "LATE", "STANDBY"}:
         if should_reply_to_unknown_inbound(conn, phone_10, text):
@@ -3971,16 +4212,29 @@ def new_game(
     invite_recipients = invitee_list_recipients(conn, int(user_id), selected_list_ids)
     invite_sent = 0
     invite_failed = 0
+    invite_pending = 0
+    invite_disagreed = 0
     for recipient in invite_recipients:
-        sent, _ = send_game_invite_sms(conn, request, created_game, recipient["phone"])
+        sent, detail = send_game_invite_sms(conn, request, created_game, recipient["phone"])
         if sent:
             invite_sent += 1
+        elif detail == "pending_consent":
+            invite_pending += 1
+        elif detail == "invitee_disagreed":
+            invite_disagreed += 1
         else:
             invite_failed += 1
     conn.commit()
     conn.close()
-    if invite_sent:
-        detail = urllib.parse.quote(f"Game created. Sent {invite_sent} invite(s)" + (f"; {invite_failed} failed" if invite_failed else ""))
+    if invite_sent or invite_pending or invite_disagreed:
+        parts = [f"Game created. Sent {invite_sent} invite(s)"]
+        if invite_pending:
+            parts.append(f"{invite_pending} waiting for AGREE")
+        if invite_disagreed:
+            parts.append(f"{invite_disagreed} disagreed")
+        if invite_failed:
+            parts.append(f"{invite_failed} failed")
+        detail = urllib.parse.quote("; ".join(parts))
         return RedirectResponse(url=f"/games/{game_id}?success={detail}", status_code=302)
     return RedirectResponse(url=f"/games/{game_id}", status_code=302)
 
@@ -3991,18 +4245,7 @@ def invitee_lists_page(request: Request):
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT name, phone
-        FROM organizer_invitees
-        WHERE organizer_id = ?
-        ORDER BY LOWER(name) ASC, datetime(last_seen_at) DESC
-        LIMIT 500
-        """,
-        (int(user_id),),
-    )
-    invitee_directory = cur.fetchall()
+    invitee_directory = organizer_invitee_directory(conn, int(user_id))
     lists = organizer_invitee_lists_with_members(conn, int(user_id))
     conn.close()
     return templates.TemplateResponse(
@@ -4029,18 +4272,7 @@ def invitee_list_detail_page(request: Request, list_id: int):
             return RedirectResponse(url="/invitee-lists?error=List%20not%20found", status_code=302)
         all_lists = organizer_invitee_lists_with_members(conn, int(user_id))
         target = next((item for item in all_lists if int(item["id"]) == int(list_id)), None)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT name, phone
-            FROM organizer_invitees
-            WHERE organizer_id = ?
-            ORDER BY LOWER(name) ASC, datetime(last_seen_at) DESC
-            LIMIT 500
-            """,
-            (int(user_id),),
-        )
-        invitee_directory = cur.fetchall()
+        invitee_directory = organizer_invitee_directory(conn, int(user_id))
         return templates.TemplateResponse(
             "invitee_list_detail.html",
             {
@@ -4053,6 +4285,221 @@ def invitee_list_detail_page(request: Request, list_id: int):
         )
     finally:
         conn.close()
+
+
+@app.get("/invitees", response_class=HTMLResponse)
+def invitees_page(request: Request, q: str = ""):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    conn = get_db()
+    invitees = organizer_invitee_directory(conn, int(user_id), q)
+    conn.close()
+    return templates.TemplateResponse(
+        "invitees.html",
+        {
+            "request": request,
+            "invitees": invitees,
+            "query": (q or "").strip(),
+            "error": request.query_params.get("error"),
+            "success": request.query_params.get("success"),
+        },
+    )
+
+
+@app.post("/invitees")
+def create_invitee_directory_entry(
+    request: Request,
+    name: str = Form(...),
+    phone: str = Form(...),
+    private_use_only: str = Form(None),
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    if str(private_use_only or "").strip() != "1":
+        return RedirectResponse(
+            url="/invitees?error=You%20must%20confirm%20the%20number%20is%20only%20for%20private%20game%20invites",
+            status_code=302,
+        )
+    try:
+        cleaned_name = clean_text(name, 50)
+        cleaned_phone = normalize_phone_10(phone)
+        if not cleaned_phone:
+            raise ValueError("invalid phone")
+    except ValueError:
+        return RedirectResponse(url="/invitees?error=Invalid%20name%20or%20phone", status_code=302)
+    conn = get_db()
+    upsert_invitee_profiles(conn, int(user_id), cleaned_phone, cleaned_name)
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM users WHERE id = ? LIMIT 1", (int(user_id),))
+    organizer_row = cur.fetchone()
+    organizer_name = (organizer_row["name"] or "").strip() if organizer_row and organizer_row["name"] else "Organizer"
+    sent, result = mark_global_invitee_pending_private_use(conn, organizer_name, cleaned_phone)
+    conn.commit()
+    conn.close()
+    if sent or result == "already_agreed":
+        message = "Invitee saved"
+        if sent:
+            message += "; permission request sent"
+        return RedirectResponse(url=f"/invitees?success={urllib.parse.quote(message)}", status_code=302)
+    return RedirectResponse(url="/invitees?success=Invitee%20saved", status_code=302)
+
+
+@app.post("/invitees/{invitee_id}/update")
+def update_invitee_directory_entry(
+    request: Request,
+    invitee_id: int,
+    name: str = Form(...),
+    phone: str = Form(...),
+    q: str = Form(None),
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    query_suffix = f"?q={urllib.parse.quote((q or '').strip())}" if str(q or "").strip() else ""
+    try:
+        cleaned_name = clean_text(name, 50)
+        cleaned_phone = normalize_phone_10(phone)
+        if not cleaned_phone:
+            raise ValueError("invalid phone")
+    except ValueError:
+        return RedirectResponse(url=f"/invitees{query_suffix}&error=Invalid%20name%20or%20phone" if query_suffix else "/invitees?error=Invalid%20name%20or%20phone", status_code=302)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM organizer_invitees WHERE id = ? AND organizer_id = ? LIMIT 1", (int(invitee_id), int(user_id)))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return RedirectResponse(url=f"/invitees{query_suffix}&error=Invitee%20not%20found" if query_suffix else "/invitees?error=Invitee%20not%20found", status_code=302)
+    old_phone = row["phone"]
+    now = _utc_now_iso()
+    try:
+        cur.execute(
+            """
+            UPDATE organizer_invitees
+            SET name = ?, phone = ?, updated_at = ?, last_seen_at = ?
+            WHERE id = ? AND organizer_id = ?
+            """,
+            (cleaned_name, cleaned_phone, now, now, int(invitee_id), int(user_id)),
+        )
+    except sqlite3.IntegrityError:
+        conn.close()
+        return RedirectResponse(url=f"/invitees{query_suffix}&error=That%20phone%20already%20exists%20in%20your%20directory" if query_suffix else "/invitees?error=That%20phone%20already%20exists%20in%20your%20directory", status_code=302)
+    if cleaned_phone != old_phone:
+        cur.execute(
+            """
+            SELECT m.id, m.list_id
+            FROM organizer_invitee_list_members m
+            JOIN organizer_invitee_lists l ON l.id = m.list_id
+            WHERE l.organizer_id = ? AND m.phone = ?
+            """,
+            (int(user_id), old_phone),
+        )
+        affected_members = cur.fetchall()
+        for member in affected_members:
+            cur.execute(
+                "SELECT id FROM organizer_invitee_list_members WHERE list_id = ? AND phone = ? LIMIT 1",
+                (int(member["list_id"]), cleaned_phone),
+            )
+            existing = cur.fetchone()
+            if existing:
+                cur.execute(
+                    "UPDATE organizer_invitee_list_members SET name = ?, updated_at = ? WHERE id = ?",
+                    (cleaned_name, now, int(existing["id"])),
+                )
+                cur.execute("DELETE FROM organizer_invitee_list_members WHERE id = ?", (int(member["id"]),))
+            else:
+                cur.execute(
+                    "UPDATE organizer_invitee_list_members SET phone = ?, name = ?, updated_at = ? WHERE id = ?",
+                    (cleaned_phone, cleaned_name, now, int(member["id"])),
+                )
+    else:
+        cur.execute(
+            """
+            UPDATE organizer_invitee_list_members
+            SET name = ?, updated_at = ?
+            WHERE phone = ?
+              AND list_id IN (SELECT id FROM organizer_invitee_lists WHERE organizer_id = ?)
+            """,
+            (cleaned_name, now, cleaned_phone, int(user_id)),
+        )
+    conn.commit()
+    conn.close()
+    success_url = f"/invitees{query_suffix}&success=Invitee%20updated" if query_suffix else "/invitees?success=Invitee%20updated"
+    if query_suffix and success_url.startswith("/invitees?"):
+        success_url = success_url.replace("?q=", "?q=")
+    return RedirectResponse(url=success_url, status_code=302)
+
+
+@app.post("/invitees/{invitee_id}/consent-request")
+def resend_invitee_consent_request(request: Request, invitee_id: int, q: str = Form(None), csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    query_suffix = f"?q={urllib.parse.quote((q or '').strip())}" if str(q or "").strip() else ""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT oi.phone, oi.name, u.name AS organizer_name
+        FROM organizer_invitees oi
+        JOIN users u ON u.id = oi.organizer_id
+        WHERE oi.id = ? AND oi.organizer_id = ?
+        LIMIT 1
+        """,
+        (int(invitee_id), int(user_id)),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return RedirectResponse(url=f"/invitees{query_suffix}&error=Invitee%20not%20found" if query_suffix else "/invitees?error=Invitee%20not%20found", status_code=302)
+    sent, result = mark_global_invitee_pending_private_use(conn, (row["organizer_name"] or "").strip() or "Organizer", row["phone"])
+    conn.commit()
+    conn.close()
+    if sent:
+        return RedirectResponse(url=f"/invitees{query_suffix}&success=Permission%20request%20sent" if query_suffix else "/invitees?success=Permission%20request%20sent", status_code=302)
+    if result == "already_agreed":
+        return RedirectResponse(url=f"/invitees{query_suffix}&success=This%20number%20is%20already%20approved" if query_suffix else "/invitees?success=This%20number%20is%20already%20approved", status_code=302)
+    return RedirectResponse(url=f"/invitees{query_suffix}&error=Could%20not%20send%20permission%20request" if query_suffix else "/invitees?error=Could%20not%20send%20permission%20request", status_code=302)
+
+
+@app.post("/invitees/{invitee_id}/delete")
+def delete_invitee_directory_entry(request: Request, invitee_id: int, q: str = Form(None), csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    query_suffix = f"?q={urllib.parse.quote((q or '').strip())}" if str(q or "").strip() else ""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT phone FROM organizer_invitees WHERE id = ? AND organizer_id = ? LIMIT 1", (int(invitee_id), int(user_id)))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return RedirectResponse(url=f"/invitees{query_suffix}&error=Invitee%20not%20found" if query_suffix else "/invitees?error=Invitee%20not%20found", status_code=302)
+    cur.execute(
+        """
+        DELETE FROM organizer_invitee_list_members
+        WHERE phone = ?
+          AND list_id IN (SELECT id FROM organizer_invitee_lists WHERE organizer_id = ?)
+        """,
+        (row["phone"], int(user_id)),
+    )
+    cur.execute("DELETE FROM organizer_invitees WHERE id = ? AND organizer_id = ?", (int(invitee_id), int(user_id)))
+    conn.commit()
+    conn.close()
+    success_url = f"/invitees{query_suffix}&success=Invitee%20deleted" if query_suffix else "/invitees?success=Invitee%20deleted"
+    return RedirectResponse(url=success_url, status_code=302)
 
 
 @app.post("/invitee-lists")
@@ -4111,6 +4558,7 @@ def add_invitee_list_member(
     list_id: int,
     name: str = Form(None),
     phone: str = Form(None),
+    private_use_only: str = Form(None),
     existing_phone: List[str] = Form(None),
     existing_name: List[str] = Form(None),
     return_to: str = Form(None),
@@ -4131,7 +4579,11 @@ def add_invitee_list_member(
     selected_names = [str(v or "").strip() for v in (existing_name or [])]
     now = _utc_now_iso()
     cur = conn.cursor()
+    cur.execute("SELECT name FROM users WHERE id = ? LIMIT 1", (int(user_id),))
+    organizer_row = cur.fetchone()
+    organizer_name = (organizer_row["name"] or "").strip() if organizer_row and organizer_row["name"] else "Organizer"
     saved_count = 0
+    consent_sent_count = 0
     try:
         if selected_phones:
             for idx, raw_phone in enumerate(selected_phones):
@@ -4153,6 +4605,12 @@ def add_invitee_list_member(
                 upsert_invitee_profiles(conn, int(user_id), cleaned_phone, cleaned_name)
                 saved_count += 1
         else:
+            if str(private_use_only or "").strip() != "1":
+                conn.close()
+                return RedirectResponse(
+                    url=f"{redirect_base}?error=You%20must%20confirm%20the%20number%20is%20only%20for%20private%20game%20invites",
+                    status_code=302,
+                )
             raw_name = (name or "").strip()
             raw_phone = (phone or "").strip()
             cleaned_name = clean_text(raw_name, 50)
@@ -4172,6 +4630,9 @@ def add_invitee_list_member(
             )
             upsert_invitee_profiles(conn, int(user_id), cleaned_phone, cleaned_name)
             saved_count = 1
+            sent, result = mark_global_invitee_pending_private_use(conn, organizer_name, cleaned_phone)
+            if sent or result == "already_agreed":
+                consent_sent_count = 1 if sent else 0
     except ValueError:
         conn.close()
         return RedirectResponse(url=f"{redirect_base}?error=Invalid%20member%20name%20or%20phone", status_code=302)
@@ -4180,6 +4641,8 @@ def add_invitee_list_member(
     conn.close()
     if selected_phones:
         return RedirectResponse(url=f"{redirect_base}?success=Saved%20{saved_count}%20member(s)", status_code=302)
+    if consent_sent_count:
+        return RedirectResponse(url=f"{redirect_base}?success=Member%20saved;%20permission%20request%20sent", status_code=302)
     return RedirectResponse(url=f"{redirect_base}?success=Member%20saved", status_code=302)
 
 
@@ -4251,6 +4714,7 @@ def view_game(request: Request, game_id: int):
     invitee_directory = cur.fetchall()
 
     in_count = count_in(conn, game_id)
+    host_name = game_host_name(conn, int(game["id"]), game["organizer_name"] if "organizer_name" in game.keys() else None)
     broadcast_table_options = table_labels(len(table_sizes(game["total_players"], True))) if game_uses_multiple_tables(game) else []
     broadcast_variables = organizer_broadcast_variables(game)
     invitee_lists = organizer_invitee_lists_with_members(conn, int(game["organizer_id"]))
@@ -4261,6 +4725,7 @@ def view_game(request: Request, game_id: int):
         {
             "request": request,
             "game": game,
+            "host_name": host_name,
             "rsvps": rsvps,
             "standby": standby,
             "in_count": in_count,
@@ -4329,14 +4794,27 @@ def send_game_invite_lists(
             return RedirectResponse(url=f"/games/{game_id}?error=No%20phone%20numbers%20available%20in%20those%20lists", status_code=302)
         sent_count = 0
         failed_count = 0
+        pending_count = 0
+        disagreed_count = 0
         for recipient in recipients:
-            sent, _ = send_game_invite_sms(conn, request, game, recipient["phone"])
+            sent, detail = send_game_invite_sms(conn, request, game, recipient["phone"])
             if sent:
                 sent_count += 1
+            elif detail == "pending_consent":
+                pending_count += 1
+            elif detail == "invitee_disagreed":
+                disagreed_count += 1
             else:
                 failed_count += 1
         conn.commit()
-        success = urllib.parse.quote(f"Sent {sent_count} invite(s)" + (f"; {failed_count} failed" if failed_count else ""))
+        parts = [f"Sent {sent_count} invite(s)"]
+        if pending_count:
+            parts.append(f"{pending_count} waiting for AGREE")
+        if disagreed_count:
+            parts.append(f"{disagreed_count} disagreed")
+        if failed_count:
+            parts.append(f"{failed_count} failed")
+        success = urllib.parse.quote("; ".join(parts))
         return RedirectResponse(url=f"/games/{game_id}?success={success}", status_code=302)
     finally:
         conn.close()

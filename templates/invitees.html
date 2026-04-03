@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.invitee-directory-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.45);
+}
+.invitee-directory-card.is-muted {
+  opacity: 0.58;
+  filter: grayscale(0.35);
+}
+.invitee-directory-meta {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.invitee-directory-name {
+  font-weight: 700;
+}
+.invitee-directory-phone {
+  color: #94a3b8;
+  font-size: 13px;
+}
+.invitee-directory-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(51, 65, 85, 0.9);
+  color: #e2e8f0;
+}
+.invitee-directory-status.is-agreed {
+  background: rgba(22, 101, 52, 0.85);
+}
+.invitee-directory-status.is-pending {
+  background: rgba(146, 64, 14, 0.88);
+}
+.invitee-directory-status.is-unknown {
+  background: rgba(71, 85, 105, 0.92);
+}
+.invitee-directory-status.is-disagreed {
+  background: rgba(127, 29, 29, 0.88);
+}
+.invitee-directory-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+.invitee-directory-actions form {
+  margin: 0;
+}
+.invitee-compact-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.1;
+  border-radius: 8px;
+}
+.invitee-directory-edit {
+  display: none;
+  margin-top: 10px;
+}
+.invitee-directory-card.is-editing .invitee-directory-edit {
+  display: block;
+}
+.invitee-directory-card.is-editing .invitee-directory-actions .edit-toggle-label {
+  display: none;
+}
+@media (max-width: 640px) {
+  .invitee-directory-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .invitee-directory-meta {
+    display: block;
+  }
+  .invitee-directory-actions,
+  .invitee-directory-actions .btn,
+  .invitee-directory-edit .btn {
+    width: 100%;
+  }
+  .invitee-directory-actions {
+    flex-wrap: wrap;
+  }
+}
+</style>
+
+<h1>Invitees</h1>
+<p>Manage your global invitee directory. Changes here also update saved distribution lists that use the same phone number.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if success %}<div class="notice notice-strong">{{ success }}</div>{% endif %}
+
+<div class="grid grid-2">
+  <div class="card">
+    <h2 style="margin-top:0;">Search</h2>
+    <form method="get" action="/invitees" class="grid">
+      <div>
+        <label>Name or Phone</label>
+        <input type="text" name="q" value="{{ query }}" placeholder="Search invitees">
+      </div>
+      <div class="row">
+        <button class="btn" type="submit">Search</button>
+        {% if query %}
+        <a class="btn secondary" href="/invitees">Clear</a>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Add Invitee</h2>
+    <form method="post" action="/invitees" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" maxlength="50" placeholder="Player name" required>
+      </div>
+      <div>
+        <label>Cell</label>
+        <input type="tel" name="phone" placeholder="+1 (807) 555-1234" required>
+      </div>
+      <div>
+        <label style="display:flex; align-items:flex-start; gap:8px; margin:0;">
+          <input type="checkbox" name="private_use_only" value="1" style="width:auto; margin-top:2px;" required>
+          <span>This number will only be used for private poker game invites through Poker Invite Manager.</span>
+        </label>
+      </div>
+      <div class="row">
+        <button class="btn" type="submit">Save Invitee</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <div class="row" style="justify-content:space-between; align-items:center; gap:12px;">
+    <h2 style="margin:0;">Directory</h2>
+    <span class="badge">{{ invitees|length }} shown</span>
+  </div>
+  {% if invitees and invitees|length > 0 %}
+  <div class="grid" style="margin-top:12px;">
+    {% for invitee in invitees %}
+    {% set consent_status = (invitee['consent_status'] or 'unknown')|lower %}
+    <div class="invitee-directory-card{% if consent_status == 'disagreed' %} is-muted{% endif %}" data-invitee-card>
+      <div style="min-width:0; width:100%;">
+        <div class="invitee-directory-meta">
+          <div class="invitee-directory-name">{{ invitee['name'] }}</div>
+          <div class="invitee-directory-phone">{{ invitee['phone'] | fmt_phone }}</div>
+          <div class="invitee-directory-status is-{{ consent_status }}">
+            {% if consent_status == 'agreed' %}Agreed{% elif consent_status == 'pending' %}Pending{% elif consent_status == 'disagreed' %}Disagreed{% else %}Unknown{% endif %}
+          </div>
+        </div>
+        <div class="invitee-directory-edit">
+          <form method="post" action="/invitees/{{ invitee['id'] }}/update" class="grid">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <input type="hidden" name="q" value="{{ query }}">
+            <div>
+              <label>Name</label>
+              <input type="text" name="name" maxlength="50" value="{{ invitee['name'] }}" required>
+            </div>
+            <div>
+              <label>Cell</label>
+              <input type="tel" name="phone" value="{{ invitee['phone'] | fmt_phone }}" required>
+            </div>
+            <div class="row">
+              <button class="btn" type="submit">Save</button>
+              <button class="btn secondary invitee-edit-cancel" type="button">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+      <div class="invitee-directory-actions">
+        {% if consent_status != 'agreed' %}
+        <form method="post" action="/invitees/{{ invitee['id'] }}/consent-request">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <input type="hidden" name="q" value="{{ query }}">
+          <button class="btn secondary invitee-compact-btn" type="submit">Request Permission</button>
+        </form>
+        {% endif %}
+        <button class="btn secondary invitee-edit-toggle invitee-compact-btn" type="button"><span class="edit-toggle-label">Edit</span></button>
+        <form method="post" action="/invitees/{{ invitee['id'] }}/delete" onsubmit="return confirm('Delete this invitee from your directory and saved lists? Past RSVPs will stay in games.');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <input type="hidden" name="q" value="{{ query }}">
+          <button class="btn danger invitee-compact-btn" type="submit">Delete</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p style="margin-top:12px;">No invitees found.</p>
+  {% endif %}
+</div>
+
+<script nonce="{{ csp_nonce(request) }}">
+  document.querySelectorAll('[data-invitee-card]').forEach((card) => {
+    const toggleBtn = card.querySelector('.invitee-edit-toggle');
+    const cancelBtn = card.querySelector('.invitee-edit-cancel');
+    toggleBtn && toggleBtn.addEventListener('click', () => {
+      card.classList.add('is-editing');
+    });
+    cancelBtn && cancelBtn.addEventListener('click', () => {
+      card.classList.remove('is-editing');
+    });
+  });
+</script>
+{% endblock %}

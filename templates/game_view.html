@@ -32,7 +32,7 @@
 <div class="row organizer-actions organizer-actions-buttons">
   <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
   <a class="btn secondary" href="/games/{{ game['id'] }}/broadcast">Send Announcement</a>
-  <a class="btn secondary" href="/invitee-lists">Invite Lists</a>
+  <button type="button" id="openInviteListsModal" class="btn secondary">Invites</button>
   <form method="post" action="/games/{{ game['id'] }}/seats/assign" id="seatAssignForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['manual_seat_assignment'] %}Reassign Seats{% else %}Assign Seats Now{% endif %}</button>
@@ -43,30 +43,39 @@
   </form>
   <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
 </div>
-{% if invitee_lists and invitee_lists|length > 0 %}
-<div class="card" style="margin: 12px 0;">
-  <h3 style="margin-top:0;">Invite From Lists</h3>
-  <form method="post" action="/games/{{ game['id'] }}/invite-lists/send" class="grid">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <div class="row" style="gap:12px; flex-wrap:wrap;">
-      {% for item in invitee_lists %}
-      <label style="display:flex; align-items:center; gap:8px; margin:0;">
-        <input type="checkbox" name="invite_list_ids" value="{{ item['id'] }}" style="width:auto;">
-        {{ item['name'] }} <span class="badge">{{ item['member_count'] }}</span>
-      </label>
-      {% endfor %}
-    </div>
-    <div class="row">
-      <button class="btn secondary" type="submit">Send Game Invite</button>
-    </div>
-  </form>
-</div>
-{% endif %}
 <div class="row organizer-actions organizer-actions-badges">
   <span class="badge" id="playersInBadge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
   <span class="badge">SMS: {% if game['sms_enabled'] %}ON{% else %}OFF{% endif %}</span>
   {% if game['manual_seat_assignment'] %}<span class="badge">Seats: Manual</span>{% endif %}
   {% if game['is_cancelled'] %}<span class="badge">Status: Cancelled</span>{% endif %}
+</div>
+<div id="inviteListsModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>Invites</h3>
+    <p style="margin-bottom:10px;">Send this game invite to one or more saved lists, or manage your lists.</p>
+    {% if invitee_lists and invitee_lists|length > 0 %}
+    <form method="post" action="/games/{{ game['id'] }}/invite-lists/send" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div class="row" style="gap:12px; flex-wrap:wrap;">
+        {% for item in invitee_lists %}
+        <label style="display:flex; align-items:center; gap:8px; margin:0;">
+          <input type="checkbox" name="invite_list_ids" value="{{ item['id'] }}" style="width:auto;">
+          {{ item['name'] }} <span class="badge">{{ item['member_count'] }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="row">
+        <button class="btn" type="submit">Send Game Invite</button>
+        <button class="btn secondary" type="button" id="closeInviteListsModal">Close</button>
+      </div>
+    </form>
+    {% else %}
+    <p style="margin-bottom:12px;">You do not have any invite lists yet.</p>
+    <div class="row">
+      <button class="btn secondary" type="button" id="closeInviteListsModalEmpty">Close</button>
+    </div>
+    {% endif %}
+  </div>
 </div>
 <div id="broadcastModal" class="modal" style="display:none;">
   <div class="modal-card">
@@ -392,11 +401,15 @@
     const sortTimeBtn = document.getElementById('sortTime');
     const sortSeatBtn = document.getElementById('sortSeat');
     const detailsModal = document.getElementById('detailsModal');
+    const inviteListsModal = document.getElementById('inviteListsModal');
     const broadcastModal = document.getElementById('broadcastModal');
     const cancelGameForm = document.getElementById('cancelGameForm');
     const smsToggleForm = document.getElementById('smsToggleForm');
     const openDetailsModalBtn = document.getElementById('openDetailsModal');
+    const openInviteListsModalBtn = document.getElementById('openInviteListsModal');
     const openBroadcastModalBtn = document.getElementById('openBroadcastModal');
+    const closeInviteListsModalBtn = document.getElementById('closeInviteListsModal');
+    const closeInviteListsModalEmptyBtn = document.getElementById('closeInviteListsModalEmpty');
     const closeBroadcastModalBtn = document.getElementById('closeBroadcastModal');
     const closeDetailsModalBtn = document.getElementById('closeDetailsModal');
     const addPlayerModal = document.getElementById('addPlayerModal');
@@ -688,6 +701,7 @@
       const link = "{{ public_base_url(request) }}/game?g={{ game['code'] }}";
       const seatLine = seatLabel ? `\nSeat: ${seatLabel}` : '';
       const title = {{ game['title'] | tojson }};
+      const hostName = {{ host_name | default('', true) | tojson }};
       const location = {{ game['location'] | tojson }};
       const dateRaw = "{{ game['game_date'] }}";
       let dateWithDay = dateRaw;
@@ -696,7 +710,8 @@
         const shortDay = parsed.toLocaleDateString('en-US', { weekday: 'short' });
         dateWithDay = `${shortDay} ${dateRaw}`;
       }
-      return `${title}\nWhen: ${dateWithDay} at {{ game['game_time'] | fmt_game_time }}\nWhere: ${location}` + seatLine + `\n` + link;
+      const hostLine = hostName ? `Hosted by ${hostName}\n` : '';
+      return `${title}\n${hostLine}When: ${dateWithDay} at {{ game['game_time'] | fmt_game_time }}\nWhere: ${location}\n\nText back: IN, OUT, or LATE 7:30PM` + seatLine + `\n\n` + link;
     }
 
     async function sendTextViaTwilio(rsvpId, buttonEl) {
@@ -814,6 +829,10 @@
       e.preventDefault();
       if (detailsModal) detailsModal.style.display = 'flex';
     });
+    openInviteListsModalBtn && openInviteListsModalBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (inviteListsModal) inviteListsModal.style.display = 'flex';
+    });
     cancelGameForm && cancelGameForm.addEventListener('submit', (e) => {
       const msg = {{ ("Reopen this game? This also cancels any pending cancellation SMS and invitees will be able to RSVP again." if game['is_cancelled'] else "Are you sure? Cancelling will schedule SMS to all players/standby in 2 minutes. Reopen within 2 minutes to stop those texts.") | tojson }};
       if (!window.confirm(msg)) e.preventDefault();
@@ -833,8 +852,17 @@
     closeBroadcastModalBtn && closeBroadcastModalBtn.addEventListener('click', () => {
       if (broadcastModal) broadcastModal.style.display = 'none';
     });
+    closeInviteListsModalBtn && closeInviteListsModalBtn.addEventListener('click', () => {
+      if (inviteListsModal) inviteListsModal.style.display = 'none';
+    });
+    closeInviteListsModalEmptyBtn && closeInviteListsModalEmptyBtn.addEventListener('click', () => {
+      if (inviteListsModal) inviteListsModal.style.display = 'none';
+    });
     closeDetailsModalBtn && closeDetailsModalBtn.addEventListener('click', () => {
       if (detailsModal) detailsModal.style.display = 'none';
+    });
+    inviteListsModal && inviteListsModal.addEventListener('click', (e) => {
+      if (e.target === inviteListsModal) inviteListsModal.style.display = 'none';
     });
     broadcastModal && broadcastModal.addEventListener('click', (e) => {
       if (e.target === broadcastModal) broadcastModal.style.display = 'none';
