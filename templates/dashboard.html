@@ -16,7 +16,6 @@
     <p>{{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }} • {{ game['location'] }}</p>
     <div class="row">
       <span class="badge">Total Players: {{ game['total_players'] }}</span>
-      <span class="badge">Code: {{ game['code'] }}</span>
       {% if not game['is_owner'] %}<span class="badge">Shared</span>{% endif %}
       {% if game['is_cancelled'] %}<span class="badge">Cancelled</span>{% endif %}
     </div>
@@ -32,8 +31,6 @@
         data-location="{{ game['location'] }}"
       >Copy Invite Link</button>
       <a class="btn secondary" href="/h/{{ game['host_code'] }}">Open Roster</a>
-      <span class="badge">Invite Link: /game?g={{ game['code'] }}</span>
-      <span class="badge">Roster Link: /h/{{ game['host_code'] }}</span>
       {% if game['is_owner'] %}
       <form method="post" action="/games/{{ game['id'] }}/delete" class="confirm-delete-game" style="margin-left:auto;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
