@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Invite Lists</h1>
+<p>Build reusable groups of invitees, then use them when creating a game or sending another wave of invites.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if success %}<div class="notice notice-strong">{{ success }}</div>{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0;">Create List</h2>
+  <form method="post" action="/invitee-lists" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="text" name="name" maxlength="60" placeholder="List A" required style="max-width:320px;">
+    <button class="btn" type="submit">Create</button>
+  </form>
+</div>
+
+{% if lists and lists|length > 0 %}
+  {% for item in lists %}
+  <div class="card">
+    <div class="row" style="justify-content:space-between; align-items:center;">
+      <div>
+        <h2 style="margin:0;">{{ item['name'] }}</h2>
+        <p style="margin:6px 0 0 0;">{{ item['member_count'] }} member(s)</p>
+      </div>
+      <form method="post" action="/invitee-lists/{{ item['id'] }}/delete" onsubmit="return confirm('Delete this invite list?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button class="btn danger" type="submit">Delete List</button>
+      </form>
+    </div>
+
+    {% if item['members'] and item['members']|length > 0 %}
+    <table class="table" style="margin-top:12px;">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Cell</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for member in item['members'] %}
+        <tr>
+          <td data-label="Name">{{ member['name'] }}</td>
+          <td data-label="Cell">{{ member['phone'] | fmt_phone }}</td>
+          <td data-label="Action">
+            <form method="post" action="/invitee-lists/{{ item['id'] }}/members/{{ member['id'] }}/remove">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+              <button class="btn secondary" type="submit">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="margin-top:12px;">No members yet.</p>
+    {% endif %}
+
+    <div class="grid grid-2" style="margin-top:16px;">
+      <form method="post" action="/invitee-lists/{{ item['id'] }}/members/add" class="grid">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <h3 style="margin:0;">Add From Invitee Directory</h3>
+        <div>
+          <label>Existing Invitee</label>
+          <select name="existing_phone" class="invitee-list-existing">
+            <option value="">Pick invitee</option>
+            {% for invitee in invitee_directory %}
+            <option value="{{ invitee['phone'] }}" data-name="{{ invitee['name'] }}">{{ invitee['name'] }}{% if invitee['phone'] %} ({{ invitee['phone'] | fmt_phone }}){% endif %}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <input type="hidden" name="existing_name" value="">
+        <div>
+          <button class="btn secondary" type="submit">Add From Directory</button>
+        </div>
+      </form>
+
+      <form method="post" action="/invitee-lists/{{ item['id'] }}/members/add" class="grid">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <h3 style="margin:0;">Add Manual Entry</h3>
+        <div>
+          <label>Name</label>
+          <input type="text" name="name" maxlength="50" placeholder="Player name" required>
+        </div>
+        <div>
+          <label>Cell</label>
+          <input type="tel" name="phone" placeholder="+1 (807) 555-1234" required>
+        </div>
+        <div>
+          <button class="btn secondary" type="submit">Add Manual Entry</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+<p>No invite lists yet.</p>
+{% endif %}
+
+<script nonce="{{ csp_nonce(request) }}">
+  document.querySelectorAll('.invitee-list-existing').forEach((select) => {
+    select.addEventListener('change', () => {
+      const form = select.closest('form');
+      const hiddenName = form ? form.querySelector('input[name="existing_name"]') : null;
+      const opt = select.options[select.selectedIndex];
+      if (hiddenName) hiddenName.value = opt ? (opt.getAttribute('data-name') || '') : '';
+    });
+  });
+</script>
+{% endblock %}

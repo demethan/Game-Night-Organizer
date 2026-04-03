@@ -31,7 +31,8 @@
 </p>
 <div class="row organizer-actions organizer-actions-buttons">
   <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
-  <button class="btn secondary" type="button" id="openBroadcastModal">Send Announcement</button>
+  <a class="btn secondary" href="/games/{{ game['id'] }}/broadcast">Send Announcement</a>
+  <a class="btn secondary" href="/invitee-lists">Invite Lists</a>
   <form method="post" action="/games/{{ game['id'] }}/seats/assign" id="seatAssignForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['manual_seat_assignment'] %}Reassign Seats{% else %}Assign Seats Now{% endif %}</button>
@@ -42,6 +43,25 @@
   </form>
   <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
 </div>
+{% if invitee_lists and invitee_lists|length > 0 %}
+<div class="card" style="margin: 12px 0;">
+  <h3 style="margin-top:0;">Invite From Lists</h3>
+  <form method="post" action="/games/{{ game['id'] }}/invite-lists/send" class="grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="row" style="gap:12px; flex-wrap:wrap;">
+      {% for item in invitee_lists %}
+      <label style="display:flex; align-items:center; gap:8px; margin:0;">
+        <input type="checkbox" name="invite_list_ids" value="{{ item['id'] }}" style="width:auto;">
+        {{ item['name'] }} <span class="badge">{{ item['member_count'] }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="row">
+      <button class="btn secondary" type="submit">Send Game Invite</button>
+    </div>
+  </form>
+</div>
+{% endif %}
 <div class="row organizer-actions organizer-actions-badges">
   <span class="badge" id="playersInBadge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
   <span class="badge">SMS: {% if game['sms_enabled'] %}ON{% else %}OFF{% endif %}</span>

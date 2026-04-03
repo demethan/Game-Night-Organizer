@@ -678,6 +678,33 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_organizer_invitees_phone ON organizer_invitees(phone)")
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS organizer_invitee_lists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organizer_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (organizer_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_invitee_lists_org_name ON organizer_invitee_lists(organizer_id, name)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS organizer_invitee_list_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            list_id INTEGER NOT NULL,
+            phone TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (list_id) REFERENCES organizer_invitee_lists(id)
+        )
+        """
+    )
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_invitee_list_members_list_phone ON organizer_invitee_list_members(list_id, phone)")
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS global_invitees (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             phone TEXT NOT NULL UNIQUE,
@@ -923,9 +950,15 @@ def seat_threshold_reached(conn: sqlite3.Connection, game_id: int, total_players
     if total_players <= 0:
         return False
     cur = conn.cursor()
-    cur.execute("SELECT manual_seat_assignment FROM games WHERE id = ?", (game_id,))
+    cur.execute("SELECT manual_seat_assignment, multiple_tables FROM games WHERE id = ?", (game_id,))
     game_row = cur.fetchone()
-    return bool(game_row and int(game_row["manual_seat_assignment"] or 0) == 1)
+    if not game_row:
+        return False
+    if int(game_row["manual_seat_assignment"] or 0) == 1:
+        return True
+    if int(game_row["multiple_tables"] or 0) == 0 and count_in(conn, int(game_id)) >= int(total_players):
+        return True
+    return False
 
 
 def assign_seats_if_ready(conn: sqlite3.Connection, game_id: int, total_players: int) -> None:
@@ -1128,6 +1161,13 @@ def build_invite_sms_text(request: Request, game_row, seat_label: Optional[str])
         lines.append(f"Seat: {seat_label}")
     lines.append(invite_link(request, game_row["code"]))
     return "\n".join(lines)
+
+
+def send_game_invite_sms(conn: sqlite3.Connection, request: Request, game_row, phone_10: Optional[str]) -> tuple[bool, str]:
+    if not phone_10:
+        return False, "Missing phone"
+    body = build_invite_sms_text(request, game_row, None)
+    return send_twilio_sms_guarded(conn, int(game_row["id"]), phone_10, body, "organizer_text")
 
 
 def send_twilio_sms(to_phone_10: str, body: str) -> tuple[bool, str]:
@@ -1390,15 +1430,14 @@ def has_valid_trusted_device(conn: sqlite3.Connection, request: Request, user_id
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, expires_at
+        SELECT id, expires_at, ua_hash
         FROM user_trusted_devices
         WHERE user_id = ?
           AND token_hash = ?
-          AND ua_hash = ?
           AND revoked_at IS NULL
         LIMIT 1
         """,
-        (user_id, trusted_device_token_hash(token), trusted_device_ua_hash(request)),
+        (user_id, trusted_device_token_hash(token)),
     )
     row = cur.fetchone()
     if not row:
@@ -1409,7 +1448,14 @@ def has_valid_trusted_device(conn: sqlite3.Connection, request: Request, user_id
         return False
     if datetime.utcnow() > expires_at:
         return False
-    cur.execute("UPDATE user_trusted_devices SET last_seen_at = ? WHERE id = ?", (_utc_now_iso(), row["id"]))
+    current_ua_hash = trusted_device_ua_hash(request)
+    if (row["ua_hash"] or "") != current_ua_hash:
+        cur.execute(
+            "UPDATE user_trusted_devices SET ua_hash = ?, last_seen_at = ? WHERE id = ?",
+            (current_ua_hash, _utc_now_iso(), row["id"]),
+        )
+    else:
+        cur.execute("UPDATE user_trusted_devices SET last_seen_at = ? WHERE id = ?", (_utc_now_iso(), row["id"]))
     return True
 
 
@@ -1431,6 +1477,88 @@ def create_trusted_device(conn: sqlite3.Connection, request: Request, user_id: i
         ),
     )
     return token
+
+
+def organizer_invitee_lists_with_members(conn: sqlite3.Connection, organizer_id: int) -> list[dict]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT l.id, l.name, l.created_at, l.updated_at, COUNT(m.id) AS member_count
+        FROM organizer_invitee_lists l
+        LEFT JOIN organizer_invitee_list_members m ON m.list_id = l.id
+        WHERE l.organizer_id = ?
+        GROUP BY l.id, l.name, l.created_at, l.updated_at
+        ORDER BY LOWER(l.name) ASC, l.id ASC
+        """,
+        (int(organizer_id),),
+    )
+    lists = [dict(row) for row in cur.fetchall()]
+    for entry in lists:
+        cur.execute(
+            """
+            SELECT id, name, phone
+            FROM organizer_invitee_list_members
+            WHERE list_id = ?
+            ORDER BY LOWER(name) ASC, id ASC
+            """,
+            (int(entry["id"]),),
+        )
+        entry["members"] = [dict(row) for row in cur.fetchall()]
+    return lists
+
+
+def get_invitee_list_for_owner(conn: sqlite3.Connection, organizer_id: int, list_id: int):
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM organizer_invitee_lists WHERE id = ? AND organizer_id = ? LIMIT 1",
+        (int(list_id), int(organizer_id)),
+    )
+    return cur.fetchone()
+
+
+def selected_invite_list_rows(conn: sqlite3.Connection, organizer_id: int, list_ids: list[int]) -> list[sqlite3.Row]:
+    cleaned_ids = [int(v) for v in list_ids if int(v) > 0]
+    if not cleaned_ids:
+        return []
+    cur = conn.cursor()
+    placeholders = ",".join("?" for _ in cleaned_ids)
+    cur.execute(
+        f"""
+        SELECT *
+        FROM organizer_invitee_lists
+        WHERE organizer_id = ?
+          AND id IN ({placeholders})
+        ORDER BY LOWER(name) ASC, id ASC
+        """,
+        [int(organizer_id), *cleaned_ids],
+    )
+    return cur.fetchall()
+
+
+def invitee_list_recipients(conn: sqlite3.Connection, organizer_id: int, list_ids: list[int]) -> list[dict[str, str]]:
+    selected_lists = selected_invite_list_rows(conn, organizer_id, list_ids)
+    if not selected_lists:
+        return []
+    cur = conn.cursor()
+    recipients: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for list_row in selected_lists:
+        cur.execute(
+            """
+            SELECT name, phone
+            FROM organizer_invitee_list_members
+            WHERE list_id = ?
+            ORDER BY LOWER(name) ASC, id ASC
+            """,
+            (int(list_row["id"]),),
+        )
+        for row in cur.fetchall():
+            phone = (row["phone"] or "").strip()
+            if not phone or phone in seen:
+                continue
+            seen.add(phone)
+            recipients.append({"name": (row["name"] or "").strip(), "phone": phone})
+    return recipients
 
 
 def create_user_mfa_code(conn: sqlite3.Connection, user_id: int) -> str:
@@ -2043,8 +2171,6 @@ async def cancel_sms_worker_loop():
 def notify_seat_sms_when_full(conn: sqlite3.Connection, game_row) -> None:
     game_id = int(game_row["id"])
     total_players = int(game_row["total_players"])
-    if count_in(conn, game_id) < total_players:
-        return
     cur = conn.cursor()
     cur.execute(
         """
@@ -2062,13 +2188,17 @@ def notify_seat_sms_when_full(conn: sqlite3.Connection, game_row) -> None:
     rows = cur.fetchall()
     if not rows:
         return
+    is_full = count_in(conn, game_id) >= total_players
     for row in rows:
         seat_label = seat_display(
             row["seat_number"],
             total_players,
             game_uses_multiple_tables(game_row),
         ) or f"#{row['seat_number']}"
-        body = f"{game_row['title']} is now full. Your seat is {seat_label}."
+        if is_full:
+            body = f"{game_row['title']} is now full. Your seat is {seat_label}."
+        else:
+            body = f"{game_row['title']}: your seat is {seat_label}."
         sent, _ = send_twilio_sms_guarded(conn, game_id, row["phone"], body, "seat_full")
         if sent:
             cur.execute(
@@ -3066,7 +3196,8 @@ def mfa_verify(request: Request, code: str = Form(...), trust_device: str = Form
             max_age=TRUSTED_DEVICE_DAYS * 24 * 60 * 60,
             httponly=True,
             secure=os.getenv("SESSION_SECURE", "true").lower() == "true",
-            samesite="strict",
+            samesite="lax",
+            path="/",
         )
     return response
 
@@ -3524,6 +3655,7 @@ def build_new_game_form_context(request: Request, user_id: int, error: Optional[
         (user_id,),
     )
     organizer_name_suggestions = [row["name"] for row in cur.fetchall() if row["name"]]
+    invitee_lists = organizer_invitee_lists_with_members(conn, int(user_id))
     conn.close()
     default_game_date = thunder_bay_now().strftime("%Y-%m-%d")
 
@@ -3538,6 +3670,7 @@ def build_new_game_form_context(request: Request, user_id: int, error: Optional[
         "location_suggestions": location_suggestions,
         "total_player_suggestions": total_player_suggestions,
         "organizer_name_suggestions": organizer_name_suggestions,
+        "invitee_lists": invitee_lists,
     }
 
 
@@ -3551,6 +3684,7 @@ def new_game(
     total_players: int = Form(...),
     organizer_name: str = Form(...),
     organizer_phone: str = Form(None),
+    invite_list_ids: List[str] = Form(None),
     co_organizers: str = Form(None),
     multiple_tables: str = Form(None),
     csrf_token: str = Form(...),
@@ -3577,6 +3711,10 @@ def new_game(
         cleaned_organizer_phone = normalize_phone_10(organizer_phone)
     except ValueError:
         return templates.TemplateResponse("create_game.html", build_new_game_form_context(request, user_id, "Invalid organizer phone number."), status_code=400)
+    try:
+        selected_list_ids = sorted({int(str(v).strip()) for v in (invite_list_ids or []) if str(v).strip()})
+    except ValueError:
+        return templates.TemplateResponse("create_game.html", build_new_game_form_context(request, user_id, "Invalid invite list selection."), status_code=400)
 
     conn = get_db()
     cur = conn.cursor()
@@ -3668,10 +3806,175 @@ def new_game(
                 )
 
     assign_seats_if_ready(conn, game_id, total_players)
+    cur.execute("SELECT * FROM games WHERE id = ?", (game_id,))
+    created_game = cur.fetchone()
+    invite_recipients = invitee_list_recipients(conn, int(user_id), selected_list_ids)
+    invite_sent = 0
+    invite_failed = 0
+    for recipient in invite_recipients:
+        sent, _ = send_game_invite_sms(conn, request, created_game, recipient["phone"])
+        if sent:
+            invite_sent += 1
+        else:
+            invite_failed += 1
     conn.commit()
     conn.close()
-
+    if invite_sent:
+        detail = urllib.parse.quote(f"Game created. Sent {invite_sent} invite(s)" + (f"; {invite_failed} failed" if invite_failed else ""))
+        return RedirectResponse(url=f"/games/{game_id}?success={detail}", status_code=302)
     return RedirectResponse(url=f"/games/{game_id}", status_code=302)
+
+
+@app.get("/invitee-lists", response_class=HTMLResponse)
+def invitee_lists_page(request: Request):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT name, phone
+        FROM organizer_invitees
+        WHERE organizer_id = ?
+        ORDER BY LOWER(name) ASC, datetime(last_seen_at) DESC
+        LIMIT 500
+        """,
+        (int(user_id),),
+    )
+    invitee_directory = cur.fetchall()
+    lists = organizer_invitee_lists_with_members(conn, int(user_id))
+    conn.close()
+    return templates.TemplateResponse(
+        "invitee_lists.html",
+        {
+            "request": request,
+            "lists": lists,
+            "invitee_directory": invitee_directory,
+            "error": request.query_params.get("error"),
+            "success": request.query_params.get("success"),
+        },
+    )
+
+
+@app.post("/invitee-lists")
+def create_invitee_list(request: Request, name: str = Form(...), csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    try:
+        cleaned_name = clean_text(name, 60)
+    except ValueError:
+        return RedirectResponse(url="/invitee-lists?error=Invalid%20list%20name", status_code=302)
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        now = _utc_now_iso()
+        cur.execute(
+            """
+            INSERT INTO organizer_invitee_lists (organizer_id, name, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (int(user_id), cleaned_name, now, now),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return RedirectResponse(url="/invitee-lists?error=List%20name%20already%20exists", status_code=302)
+    conn.close()
+    return RedirectResponse(url="/invitee-lists?success=List%20created", status_code=302)
+
+
+@app.post("/invitee-lists/{list_id}/delete")
+def delete_invitee_list(request: Request, list_id: int, csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    conn = get_db()
+    list_row = get_invitee_list_for_owner(conn, int(user_id), int(list_id))
+    if not list_row:
+        conn.close()
+        return RedirectResponse(url="/invitee-lists?error=List%20not%20found", status_code=302)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM organizer_invitee_list_members WHERE list_id = ?", (int(list_id),))
+    cur.execute("DELETE FROM organizer_invitee_lists WHERE id = ?", (int(list_id),))
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url="/invitee-lists?success=List%20deleted", status_code=302)
+
+
+@app.post("/invitee-lists/{list_id}/members/add")
+def add_invitee_list_member(
+    request: Request,
+    list_id: int,
+    name: str = Form(None),
+    phone: str = Form(None),
+    existing_phone: str = Form(None),
+    existing_name: str = Form(None),
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    conn = get_db()
+    list_row = get_invitee_list_for_owner(conn, int(user_id), int(list_id))
+    if not list_row:
+        conn.close()
+        return RedirectResponse(url="/invitee-lists?error=List%20not%20found", status_code=302)
+    raw_name = (existing_name or name or "").strip()
+    raw_phone = (existing_phone or phone or "").strip()
+    try:
+        cleaned_name = clean_text(raw_name, 50)
+        cleaned_phone = normalize_phone_10(raw_phone)
+    except ValueError:
+        conn.close()
+        return RedirectResponse(url="/invitee-lists?error=Invalid%20member%20name%20or%20phone", status_code=302)
+    if not cleaned_phone:
+        conn.close()
+        return RedirectResponse(url="/invitee-lists?error=Phone%20is%20required", status_code=302)
+    now = _utc_now_iso()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO organizer_invitee_list_members (list_id, phone, name, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(list_id, phone) DO UPDATE SET
+            name = excluded.name,
+            updated_at = excluded.updated_at
+        """,
+        (int(list_id), cleaned_phone, cleaned_name, now, now),
+    )
+    upsert_invitee_profiles(conn, int(user_id), cleaned_phone, cleaned_name)
+    cur.execute("UPDATE organizer_invitee_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url="/invitee-lists?success=Member%20saved", status_code=302)
+
+
+@app.post("/invitee-lists/{list_id}/members/{member_id}/remove")
+def remove_invitee_list_member(request: Request, list_id: int, member_id: int, csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    conn = get_db()
+    list_row = get_invitee_list_for_owner(conn, int(user_id), int(list_id))
+    if not list_row:
+        conn.close()
+        return RedirectResponse(url="/invitee-lists?error=List%20not%20found", status_code=302)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM organizer_invitee_list_members WHERE id = ? AND list_id = ?", (int(member_id), int(list_id)))
+    cur.execute("UPDATE organizer_invitee_lists SET updated_at = ? WHERE id = ?", (_utc_now_iso(), int(list_id)))
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url="/invitee-lists?success=Member%20removed", status_code=302)
 
 
 @app.get("/games/{game_id}", response_class=HTMLResponse)
@@ -3723,6 +4026,7 @@ def view_game(request: Request, game_id: int):
     in_count = count_in(conn, game_id)
     broadcast_table_options = table_labels(len(table_sizes(game["total_players"], True))) if game_uses_multiple_tables(game) else []
     broadcast_variables = organizer_broadcast_variables(game)
+    invitee_lists = organizer_invitee_lists_with_members(conn, int(game["organizer_id"]))
     conn.close()
 
     return templates.TemplateResponse(
@@ -3736,12 +4040,79 @@ def view_game(request: Request, game_id: int):
             "is_owner": is_owner,
             "co_organizers": co_organizers,
             "invitee_directory": invitee_directory,
+            "invitee_lists": invitee_lists,
             "broadcast_table_options": broadcast_table_options,
             "broadcast_variables": broadcast_variables,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
     )
+
+
+@app.get("/games/{game_id}/broadcast", response_class=HTMLResponse)
+def broadcast_page(request: Request, game_id: int):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    conn = get_db()
+    game, _ = get_game_for_manager(conn, game_id, user_id)
+    if not game:
+        conn.close()
+        return RedirectResponse(url="/dashboard", status_code=302)
+    broadcast_table_options = table_labels(len(table_sizes(game["total_players"], True))) if game_uses_multiple_tables(game) else []
+    conn.close()
+    return templates.TemplateResponse(
+        "broadcast_page.html",
+        {
+            "request": request,
+            "game": game,
+            "broadcast_table_options": broadcast_table_options,
+            "broadcast_variables": organizer_broadcast_variables(game),
+            "error": request.query_params.get("error"),
+            "success": request.query_params.get("success"),
+        },
+    )
+
+
+@app.post("/games/{game_id}/invite-lists/send")
+def send_game_invite_lists(
+    request: Request,
+    game_id: int,
+    invite_list_ids: List[str] = Form(None),
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    try:
+        selected_list_ids = sorted({int(str(v).strip()) for v in (invite_list_ids or []) if str(v).strip()})
+    except ValueError:
+        return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20invite%20list%20selection", status_code=302)
+    if not selected_list_ids:
+        return RedirectResponse(url=f"/games/{game_id}?error=Pick%20at%20least%20one%20invite%20list", status_code=302)
+    conn = get_db()
+    try:
+        game, _ = get_game_for_manager(conn, game_id, user_id)
+        if not game:
+            return RedirectResponse(url="/dashboard", status_code=302)
+        recipients = invitee_list_recipients(conn, int(game["organizer_id"]), selected_list_ids)
+        if not recipients:
+            return RedirectResponse(url=f"/games/{game_id}?error=No%20phone%20numbers%20available%20in%20those%20lists", status_code=302)
+        sent_count = 0
+        failed_count = 0
+        for recipient in recipients:
+            sent, _ = send_game_invite_sms(conn, request, game, recipient["phone"])
+            if sent:
+                sent_count += 1
+            else:
+                failed_count += 1
+        conn.commit()
+        success = urllib.parse.quote(f"Sent {sent_count} invite(s)" + (f"; {failed_count} failed" if failed_count else ""))
+        return RedirectResponse(url=f"/games/{game_id}?success={success}", status_code=302)
+    finally:
+        conn.close()
 
 
 @app.get("/games/{game_id}/snapshot")
@@ -3852,6 +4223,7 @@ def organizer_broadcast_text(
     recipient_filters: List[str] = Form(None),
     table_filter: str = Form(None),
     cc_host: str = Form(None),
+    return_to: str = Form(None),
     csrf_token: str = Form(...),
 ):
     user_id = require_login(request)
@@ -3865,12 +4237,13 @@ def organizer_broadcast_text(
     selected = set(filters)
     selected_table = str(table_filter or "").strip().upper() or None
     include_host = str(cc_host or "").strip().lower() in {"1", "true", "on", "yes"}
+    redirect_base = f"/games/{game_id}/broadcast" if str(return_to or "").strip() == "broadcast" else f"/games/{game_id}"
     if not raw_message:
-        return RedirectResponse(url=f"/games/{game_id}?error=Message%20is%20required", status_code=302)
+        return RedirectResponse(url=f"{redirect_base}?error=Message%20is%20required", status_code=302)
     if len(raw_message) > 480:
-        return RedirectResponse(url=f"/games/{game_id}?error=Message%20must%20be%20480%20characters%20or%20less", status_code=302)
+        return RedirectResponse(url=f"{redirect_base}?error=Message%20must%20be%20480%20characters%20or%20less", status_code=302)
     if not selected and not include_host:
-        return RedirectResponse(url=f"/games/{game_id}?error=Pick%20at%20least%20one%20recipient%20group", status_code=302)
+        return RedirectResponse(url=f"{redirect_base}?error=Pick%20at%20least%20one%20recipient%20group", status_code=302)
 
     conn = get_db()
     try:
@@ -3881,16 +4254,16 @@ def organizer_broadcast_text(
         if game_uses_multiple_tables(game):
             allowed_filters.add("TABLE")
         if selected - allowed_filters:
-            return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20recipient%20selection", status_code=302)
+            return RedirectResponse(url=f"{redirect_base}?error=Invalid%20recipient%20selection", status_code=302)
         if "TABLE" in selected:
             if not game_uses_multiple_tables(game):
-                return RedirectResponse(url=f"/games/{game_id}?error=Table%20filter%20requires%20multiple%20table%20mode", status_code=302)
+                return RedirectResponse(url=f"{redirect_base}?error=Table%20filter%20requires%20multiple%20table%20mode", status_code=302)
             valid_tables = set(table_labels(len(table_sizes(game["total_players"], True))))
             if not selected_table or selected_table not in valid_tables:
-                return RedirectResponse(url=f"/games/{game_id}?error=Pick%20a%20valid%20table", status_code=302)
+                return RedirectResponse(url=f"{redirect_base}?error=Pick%20a%20valid%20table", status_code=302)
         recipients = filtered_game_broadcast_recipients(conn, game, filters, selected_table, include_host)
         if not recipients:
-            return RedirectResponse(url=f"/games/{game_id}?error=No%20phone%20numbers%20available%20for%20this%20game", status_code=302)
+            return RedirectResponse(url=f"{redirect_base}?error=No%20phone%20numbers%20available%20for%20this%20game", status_code=302)
 
         sent_count = 0
         blocked_count = 0
@@ -3907,11 +4280,11 @@ def organizer_broadcast_text(
         conn.commit()
         if sent_count == 0:
             detail = urllib.parse.quote(last_error or "Could not send messages")
-            return RedirectResponse(url=f"/games/{game_id}?error={detail}", status_code=302)
+            return RedirectResponse(url=f"{redirect_base}?error={detail}", status_code=302)
         success = urllib.parse.quote(f"Announcement sent to {sent_count} phone(s)")
         if blocked_count:
             success = urllib.parse.quote(f"Announcement sent to {sent_count} phone(s); {blocked_count} blocked/failed")
-        return RedirectResponse(url=f"/games/{game_id}?success={success}", status_code=302)
+        return RedirectResponse(url=f"{redirect_base}?success={success}", status_code=302)
     finally:
         conn.close()
 

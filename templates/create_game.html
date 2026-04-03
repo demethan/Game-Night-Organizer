@@ -44,6 +44,22 @@
     <label>Co-organizers (optional)</label>
     <input type="text" name="co_organizers" placeholder="email@site.com, another_user">
   </div>
+  <div style="grid-column:1 / -1;">
+    <label>Invite Lists (optional)</label>
+    {% if invitee_lists and invitee_lists|length > 0 %}
+    <div class="row" style="gap:12px; flex-wrap:wrap; margin-top:6px;">
+      {% for item in invitee_lists %}
+      <label style="display:flex; align-items:center; gap:8px; margin:0;">
+        <input type="checkbox" name="invite_list_ids" value="{{ item['id'] }}" style="width:auto;">
+        {{ item['name'] }} <span class="badge">{{ item['member_count'] }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <p style="margin-top:8px;">Selected lists get an invite SMS as soon as the game is created.</p>
+    {% else %}
+    <p>No invite lists yet. <a href="/invitee-lists">Create an invite list</a>.</p>
+    {% endif %}
+  </div>
   <div>
     <button class="btn" type="submit">Create Game</button>
   </div>
