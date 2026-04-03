@@ -760,6 +760,19 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_inbound_sms_unknown_phone_created_at ON inbound_sms_unknown(phone, created_at)")
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS sms_inbound (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            raw_body TEXT NOT NULL,
+            normalized_body TEXT,
+            interpreted_command TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_inbound_phone_created_at ON sms_inbound(phone, created_at)")
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS rate_limit_hits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             endpoint TEXT NOT NULL,
@@ -1369,6 +1382,24 @@ def log_sms_outbound(conn: sqlite3.Connection, game_id: Optional[int], phone_10:
             _utc_now_iso(),
             1 if sent_ok else 0,
             (detail or "")[:300],
+        ),
+    )
+
+
+def log_sms_inbound(conn: sqlite3.Connection, phone_10: str, raw_body: str, interpreted_command: Optional[str]) -> None:
+    cur = conn.cursor()
+    normalized = _normalize_inbound_text(raw_body)
+    cur.execute(
+        """
+        INSERT INTO sms_inbound (phone, raw_body, normalized_body, interpreted_command, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            phone_10,
+            (raw_body or "").strip()[:1000],
+            normalized[:1000],
+            ((interpreted_command or "").strip()[:120] or None),
+            _utc_now_iso(),
         ),
     )
 
@@ -2406,8 +2437,24 @@ def game_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
     cur = conn.cursor()
     cur.execute("SELECT * FROM rsvps WHERE game_id = ? ORDER BY created_at ASC", (game_id,))
     rsvp_rows = cur.fetchall()
+    cur.execute(
+        """
+        SELECT s.phone, s.raw_body, s.created_at
+        FROM sms_inbound s
+        JOIN (
+            SELECT phone, MAX(id) AS max_id
+            FROM sms_inbound
+            GROUP BY phone
+        ) latest ON latest.phone = s.phone AND latest.max_id = s.id
+        """
+    )
+    latest_inbound_by_phone = {
+        (row["phone"] or "").strip(): row for row in cur.fetchall() if (row["phone"] or "").strip()
+    }
     rsvps = []
     for row in rsvp_rows:
+        phone_10 = (row["phone"] or "").strip()
+        inbound_row = latest_inbound_by_phone.get(phone_10)
         rsvps.append(
             {
                 "id": int(row["id"]),
@@ -2418,6 +2465,8 @@ def game_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
                 "late_eta": row["late_eta"] or "",
                 "created_at": row["created_at"],
                 "created_at_fmt": format_ts(row["created_at"]),
+                "latest_inbound_text": (inbound_row["raw_body"] or "") if inbound_row else "",
+                "latest_inbound_at_fmt": format_ts(inbound_row["created_at"]) if inbound_row and inbound_row["created_at"] else "",
                 "seat_number": row["seat_number"],
                 "seat_label": seat_display(row["seat_number"], game_row["total_players"], game_uses_multiple_tables(game_row)) or "-",
             }
@@ -2696,6 +2745,115 @@ def parse_inbound_late_eta(text: str) -> Optional[str]:
     return None
 
 
+def _normalize_inbound_text(text: str) -> str:
+    return " ".join((text or "").strip().upper().split())
+
+
+def _extract_inbound_time_fragment(text: str) -> Optional[str]:
+    raw = " ".join((text or "").strip().split())
+    if not raw:
+        return None
+    patterns = [
+        r"\b(\d{1,2}:\d{2}\s?(?:AM|PM))\b",
+        r"\b(\d{1,2}\s?(?:AM|PM))\b",
+        r"\b((?:1[3-9]|2[0-3]):[0-5]\d)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw, re.I)
+        if match:
+            return match.group(1)
+    return None
+
+
+def interpret_inbound_sms_text(raw_text: str) -> str:
+    text = _normalize_inbound_text(raw_text)
+    if not text:
+        return ""
+
+    if text in {"MENU", "HELP"}:
+        return "MENU"
+    if text == "STATUS":
+        return "STATUS"
+    if text == "VERIFY":
+        return "VERIFY"
+    if text in {"IN", "OUT", "STANDBY"} or text.startswith("LATE "):
+        return text
+
+    compact = f" {re.sub(r'[^A-Z0-9: ]+', ' ', text)} "
+    compact = re.sub(r"\s+", " ", compact)
+
+    if " VERIFY " in compact or " VERIFIED " in compact or " VERIFICATION " in compact:
+        return "VERIFY"
+    if " STATUS " in compact or " WHAT IS MY STATUS " in compact or " AM I IN " in compact:
+        return "STATUS"
+    if " STANDBY " in compact or " WAITLIST " in compact or " WAIT LIST " in compact:
+        return "STANDBY"
+    if " MAYBE LATE " in compact or " MIGHT BE LATE " in compact or " MAY BE LATE " in compact:
+        return "LATE"
+
+    out_phrases = {
+        " I M OUT ",
+        " IM OUT ",
+        " I AM OUT ",
+        " NOT IN ",
+        " CANT MAKE IT ",
+        " CAN T MAKE IT ",
+        " CANNOT MAKE IT ",
+        " WONT MAKE IT ",
+        " WON T MAKE IT ",
+        " WILL NOT MAKE IT ",
+        " NOT COMING ",
+        " CAN T COME ",
+        " CANT COME ",
+        " WONT COME ",
+        " WON T COME ",
+        " NO THANKS ",
+        " NOPE ",
+        " MAYBE NOT ",
+        " PROBABLY NOT ",
+        " NOT THIS TIME ",
+    }
+    if any(phrase in compact for phrase in out_phrases):
+        return "OUT"
+
+    in_phrases = {
+        " I M IN ",
+        " IM IN ",
+        " I AM IN ",
+        " COUNT ME IN ",
+        " I LL BE THERE ",
+        " I WILL BE THERE ",
+        " BE THERE ",
+        " COMING ",
+        " SEE YOU THERE ",
+        " YES I AM IN ",
+        " YES IN ",
+        " SOUNDS GOOD ",
+        " OK I M IN ",
+        " OK IM IN ",
+        " OKAY I M IN ",
+        " OKAY IM IN ",
+    }
+
+    has_late_word = any(token in compact for token in {" LATE ", " RUNNING LATE ", " BE LATE ", " BE THERE LATE ", " DELAYED "})
+    time_fragment = _extract_inbound_time_fragment(raw_text)
+    if has_late_word:
+        late_eta = parse_inbound_late_eta(time_fragment or raw_text)
+        if late_eta:
+            return f"LATE {late_eta}"
+        return "LATE"
+
+    if any(phrase in compact for phrase in in_phrases):
+        return "IN"
+
+    if compact.strip() in {"YES", "YEP", "YUP", "OK", "OKAY", "SURE"}:
+        return "IN"
+    if compact.strip() in {"NO", "NOPE", "NAH"}:
+        return "OUT"
+
+    return text
+
+
 def _inbound_unknown_body_hash(text: str) -> str:
     normalized = " ".join((text or "").strip().upper().split())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -2785,7 +2943,7 @@ def build_inbound_status_text(conn: sqlite3.Connection, phone_10: str) -> str:
 
 def apply_inbound_game_command(conn: sqlite3.Connection, request: Request, game_row, phone_10: str, raw_text: str) -> str:
     text = " ".join((raw_text or "").strip().split())
-    upper = text.upper()
+    upper = interpret_inbound_sms_text(text)
     rsvp_row, standby_row = game_contact_record_for_phone(conn, int(game_row["id"]), phone_10)
     invitee_name = resolve_invitee_name_for_phone(conn, game_row, phone_10, rsvp_row, standby_row)
     if upper == "STATUS":
@@ -2829,7 +2987,7 @@ def apply_inbound_game_command(conn: sqlite3.Connection, request: Request, game_
         target_status = "OUT"
     elif upper.startswith("LATE"):
         target_status = "LATE"
-        late_eta = parse_inbound_late_eta(text[4:].strip())
+        late_eta = parse_inbound_late_eta(upper[4:].strip())
         if not late_eta:
             return "Use LATE with a time like LATE 7:30PM or LATE 19:30."
     if not target_status:
@@ -2891,7 +3049,7 @@ def handle_inbound_sms_command(conn: sqlite3.Connection, request: Request, phone
     text = " ".join((raw_text or "").strip().split())
     if not text:
         return build_inbound_help_text()
-    upper = text.upper()
+    upper = interpret_inbound_sms_text(text)
     if upper == "MENU":
         return build_inbound_help_text()
     if upper == "STATUS":
@@ -2965,6 +3123,8 @@ def twilio_sms_inbound(request: Request, From: str = Form(None), Body: str = For
 
     conn = get_db()
     try:
+        interpreted = interpret_inbound_sms_text(Body or "")
+        log_sms_inbound(conn, phone_10, Body or "", interpreted)
         text = handle_inbound_sms_command(conn, request, phone_10, Body or "")
         conn.commit()
     finally:
@@ -3857,6 +4017,44 @@ def invitee_lists_page(request: Request):
     )
 
 
+@app.get("/invitee-lists/{list_id}", response_class=HTMLResponse)
+def invitee_list_detail_page(request: Request, list_id: int):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    conn = get_db()
+    try:
+        list_row = get_invitee_list_for_owner(conn, int(user_id), int(list_id))
+        if not list_row:
+            return RedirectResponse(url="/invitee-lists?error=List%20not%20found", status_code=302)
+        all_lists = organizer_invitee_lists_with_members(conn, int(user_id))
+        target = next((item for item in all_lists if int(item["id"]) == int(list_id)), None)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT name, phone
+            FROM organizer_invitees
+            WHERE organizer_id = ?
+            ORDER BY LOWER(name) ASC, datetime(last_seen_at) DESC
+            LIMIT 500
+            """,
+            (int(user_id),),
+        )
+        invitee_directory = cur.fetchall()
+        return templates.TemplateResponse(
+            "invitee_list_detail.html",
+            {
+                "request": request,
+                "invitee_list": target or dict(list_row),
+                "invitee_directory": invitee_directory,
+                "error": request.query_params.get("error"),
+                "success": request.query_params.get("success"),
+            },
+        )
+    finally:
+        conn.close()
+
+
 @app.post("/invitee-lists")
 def create_invitee_list(request: Request, name: str = Form(...), csrf_token: str = Form(...)):
     user_id = require_login(request)
@@ -3913,8 +4111,9 @@ def add_invitee_list_member(
     list_id: int,
     name: str = Form(None),
     phone: str = Form(None),
-    existing_phone: str = Form(None),
-    existing_name: str = Form(None),
+    existing_phone: List[str] = Form(None),
+    existing_name: List[str] = Form(None),
+    return_to: str = Form(None),
     csrf_token: str = Form(...),
 ):
     user_id = require_login(request)
@@ -3922,59 +4121,87 @@ def add_invitee_list_member(
         return RedirectResponse(url="/login", status_code=302)
     if not verify_csrf(request, csrf_token):
         return PlainTextResponse("Bad CSRF token", status_code=400)
+    redirect_base = f"/invitee-lists/{list_id}" if str(return_to or "").strip() == "detail" else "/invitee-lists"
     conn = get_db()
     list_row = get_invitee_list_for_owner(conn, int(user_id), int(list_id))
     if not list_row:
         conn.close()
-        return RedirectResponse(url="/invitee-lists?error=List%20not%20found", status_code=302)
-    raw_name = (existing_name or name or "").strip()
-    raw_phone = (existing_phone or phone or "").strip()
-    try:
-        cleaned_name = clean_text(raw_name, 50)
-        cleaned_phone = normalize_phone_10(raw_phone)
-    except ValueError:
-        conn.close()
-        return RedirectResponse(url="/invitee-lists?error=Invalid%20member%20name%20or%20phone", status_code=302)
-    if not cleaned_phone:
-        conn.close()
-        return RedirectResponse(url="/invitee-lists?error=Phone%20is%20required", status_code=302)
+        return RedirectResponse(url=f"{redirect_base}?error=List%20not%20found", status_code=302)
+    selected_phones = [str(v or "").strip() for v in (existing_phone or []) if str(v or "").strip()]
+    selected_names = [str(v or "").strip() for v in (existing_name or [])]
     now = _utc_now_iso()
     cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO organizer_invitee_list_members (list_id, phone, name, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(list_id, phone) DO UPDATE SET
-            name = excluded.name,
-            updated_at = excluded.updated_at
-        """,
-        (int(list_id), cleaned_phone, cleaned_name, now, now),
-    )
-    upsert_invitee_profiles(conn, int(user_id), cleaned_phone, cleaned_name)
+    saved_count = 0
+    try:
+        if selected_phones:
+            for idx, raw_phone in enumerate(selected_phones):
+                raw_name = selected_names[idx] if idx < len(selected_names) else ""
+                cleaned_name = clean_text(raw_name, 50)
+                cleaned_phone = normalize_phone_10(raw_phone)
+                if not cleaned_phone:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO organizer_invitee_list_members (list_id, phone, name, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(list_id, phone) DO UPDATE SET
+                        name = excluded.name,
+                        updated_at = excluded.updated_at
+                    """,
+                    (int(list_id), cleaned_phone, cleaned_name, now, now),
+                )
+                upsert_invitee_profiles(conn, int(user_id), cleaned_phone, cleaned_name)
+                saved_count += 1
+        else:
+            raw_name = (name or "").strip()
+            raw_phone = (phone or "").strip()
+            cleaned_name = clean_text(raw_name, 50)
+            cleaned_phone = normalize_phone_10(raw_phone)
+            if not cleaned_phone:
+                conn.close()
+                return RedirectResponse(url=f"{redirect_base}?error=Phone%20is%20required", status_code=302)
+            cur.execute(
+                """
+                INSERT INTO organizer_invitee_list_members (list_id, phone, name, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(list_id, phone) DO UPDATE SET
+                    name = excluded.name,
+                    updated_at = excluded.updated_at
+                """,
+                (int(list_id), cleaned_phone, cleaned_name, now, now),
+            )
+            upsert_invitee_profiles(conn, int(user_id), cleaned_phone, cleaned_name)
+            saved_count = 1
+    except ValueError:
+        conn.close()
+        return RedirectResponse(url=f"{redirect_base}?error=Invalid%20member%20name%20or%20phone", status_code=302)
     cur.execute("UPDATE organizer_invitee_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
     conn.commit()
     conn.close()
-    return RedirectResponse(url="/invitee-lists?success=Member%20saved", status_code=302)
+    if selected_phones:
+        return RedirectResponse(url=f"{redirect_base}?success=Saved%20{saved_count}%20member(s)", status_code=302)
+    return RedirectResponse(url=f"{redirect_base}?success=Member%20saved", status_code=302)
 
 
 @app.post("/invitee-lists/{list_id}/members/{member_id}/remove")
-def remove_invitee_list_member(request: Request, list_id: int, member_id: int, csrf_token: str = Form(...)):
+def remove_invitee_list_member(request: Request, list_id: int, member_id: int, return_to: str = Form(None), csrf_token: str = Form(...)):
     user_id = require_login(request)
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
     if not verify_csrf(request, csrf_token):
         return PlainTextResponse("Bad CSRF token", status_code=400)
+    redirect_base = f"/invitee-lists/{list_id}" if str(return_to or "").strip() == "detail" else "/invitee-lists"
     conn = get_db()
     list_row = get_invitee_list_for_owner(conn, int(user_id), int(list_id))
     if not list_row:
         conn.close()
-        return RedirectResponse(url="/invitee-lists?error=List%20not%20found", status_code=302)
+        return RedirectResponse(url=f"{redirect_base}?error=List%20not%20found", status_code=302)
     cur = conn.cursor()
     cur.execute("DELETE FROM organizer_invitee_list_members WHERE id = ? AND list_id = ?", (int(member_id), int(list_id)))
     cur.execute("UPDATE organizer_invitee_lists SET updated_at = ? WHERE id = ?", (_utc_now_iso(), int(list_id)))
     conn.commit()
     conn.close()
-    return RedirectResponse(url="/invitee-lists?success=Member%20removed", status_code=302)
+    return RedirectResponse(url=f"{redirect_base}?success=Member%20removed", status_code=302)
 
 
 @app.get("/games/{game_id}", response_class=HTMLResponse)

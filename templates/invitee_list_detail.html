@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.invitee-checklist {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  padding: 10px;
+}
+.invitee-member-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.45);
+}
+.invitee-member-meta {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.invitee-member-name {
+  font-weight: 700;
+}
+.invitee-member-phone {
+  color: #94a3b8;
+  font-size: 13px;
+}
+@media (max-width: 640px) {
+  .invitee-member-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .invitee-member-meta {
+    display: block;
+  }
+  .invitee-member-card form,
+  .invitee-member-card .btn {
+    width: 100%;
+  }
+}
+</style>
+
+<div class="row" style="justify-content:space-between; align-items:center; gap:12px;">
+  <div>
+    <h1 style="margin-bottom:6px;">{{ invitee_list['name'] }}</h1>
+    <p style="margin:0;">{{ invitee_list['member_count'] or (invitee_list['members']|length if invitee_list['members'] is defined else 0) }} member(s)</p>
+  </div>
+  <a class="btn secondary" href="/invitee-lists">Back To Lists</a>
+</div>
+
+{% if error %}<div class="error" style="margin-top:16px;">{{ error }}</div>{% endif %}
+{% if success %}<div class="notice notice-strong" style="margin-top:16px;">{{ success }}</div>{% endif %}
+
+<div class="grid grid-2" style="margin-top:16px;">
+  <div class="card">
+    <h2 style="margin-top:0;">Add From Invitee Directory</h2>
+    <form method="post" action="/invitee-lists/{{ invitee_list['id'] }}/members/add" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="return_to" value="detail">
+      <div>
+        <label>Pick Invitees</label>
+        <div class="invitee-checklist">
+          {% for invitee in invitee_directory %}
+          <label style="display:flex; align-items:flex-start; gap:8px; margin:0 0 8px 0;">
+            <input
+              type="checkbox"
+              name="existing_phone"
+              value="{{ invitee['phone'] }}"
+              data-name="{{ invitee['name'] }}"
+              class="invitee-list-checkbox"
+              style="width:auto; margin-top:2px;"
+            >
+            <span>{{ invitee['name'] }}{% if invitee['phone'] %} ({{ invitee['phone'] | fmt_phone }}){% endif %}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn" type="submit">Add Selected</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Add Manual Entry</h2>
+    <form method="post" action="/invitee-lists/{{ invitee_list['id'] }}/members/add" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="return_to" value="detail">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" maxlength="50" placeholder="Player name" required>
+      </div>
+      <div>
+        <label>Cell</label>
+        <input type="tel" name="phone" placeholder="+1 (807) 555-1234" required>
+      </div>
+      <div class="row">
+        <button class="btn" type="submit">Add Manual Entry</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2 style="margin-top:0;">Members</h2>
+  {% if invitee_list['members'] and invitee_list['members']|length > 0 %}
+  <div class="grid">
+    {% for member in invitee_list['members'] %}
+    <div class="invitee-member-card">
+      <div class="invitee-member-meta">
+        <div class="invitee-member-name">{{ member['name'] }}</div>
+        <div class="invitee-member-phone">{{ member['phone'] | fmt_phone }}</div>
+      </div>
+      <form method="post" action="/invitee-lists/{{ invitee_list['id'] }}/members/{{ member['id'] }}/remove">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <input type="hidden" name="return_to" value="detail">
+        <button class="btn secondary" type="submit">Remove</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p>No members yet.</p>
+  {% endif %}
+</div>
+
+<script nonce="{{ csp_nonce(request) }}">
+  document.querySelectorAll('form[action*="/members/add"]').forEach((form) => {
+    form.addEventListener('submit', () => {
+      form.querySelectorAll('input.invitee-list-existing-name').forEach((node) => node.remove());
+      form.querySelectorAll('.invitee-list-checkbox:checked').forEach((box) => {
+        const nameInput = document.createElement('input');
+        nameInput.type = 'hidden';
+        nameInput.name = 'existing_name';
+        nameInput.value = box.getAttribute('data-name') || '';
+        nameInput.className = 'invitee-list-existing-name';
+        form.appendChild(nameInput);
+      });
+    });
+  });
+</script>
+{% endblock %}

@@ -193,6 +193,16 @@
 </div>
 
 <div class="rotate-pill" aria-hidden="true">Rotate to landscape to edit RSVPs</div>
+<div id="smsReplyModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>Last SMS Reply</h3>
+    <div id="smsReplyMeta" class="badge" style="margin-bottom:10px; display:none;"></div>
+    <div id="smsReplyBody" style="white-space:pre-wrap; line-height:1.45;"></div>
+    <div class="row" style="margin-top:12px;">
+      <button class="btn secondary" type="button" id="closeSmsReplyModal">Close</button>
+    </div>
+  </div>
+</div>
 <div class="row organizer-filter-row" style="margin-bottom: 12px;">
   <span class="badge" id="activeFilter" style="display:none;">Filter: <span id="activeFilterValue"></span> (tap to clear)</span>
 </div>
@@ -206,6 +216,7 @@
       <th>ETA</th>
       <th class="hide-mobile" id="sortTime" style="cursor: pointer;">Time</th>
       <th class="hide-mobile">Edit</th>
+      <th>Reply</th>
       <th>Text</th>
     </tr>
   </thead>
@@ -227,6 +238,13 @@
           data-phone="{{ r['phone'] or '' }}">
           Edit
         </button>
+      </td>
+      <td data-label="Reply">
+        {% if r['latest_inbound_text'] %}
+          <button class="btn secondary sms-reply-btn" type="button" data-name="{{ r['name'] }}" data-reply="{{ r['latest_inbound_text'] }}" data-reply-at="{{ r['latest_inbound_at_fmt'] or '' }}">SMS</button>
+        {% else %}
+          <span class="badge">—</span>
+        {% endif %}
       </td>
       <td data-label="Text">
         {% if r['phone'] %}
@@ -413,6 +431,10 @@
     const etaInput = document.getElementById('editEta');
     const phoneInput = document.getElementById('editPhone');
     const closeBtn = document.getElementById('closeModal');
+    const smsReplyModal = document.getElementById('smsReplyModal');
+    const smsReplyMeta = document.getElementById('smsReplyMeta');
+    const smsReplyBody = document.getElementById('smsReplyBody');
+    const closeSmsReplyModalBtn = document.getElementById('closeSmsReplyModal');
     if (!tbody || !activeFilter || !activeFilterValue || !playersInBadge) return;
 
     const order = { IN: 0, HOST: 1, LATE: 2, OUT: 3 };
@@ -615,7 +637,12 @@
         const lateEta = r.late_eta || '-';
         const phoneFmt = r.phone_fmt || '-';
         const createdAtFmt = r.created_at_fmt || '';
+        const latestInboundText = r.latest_inbound_text || '';
+        const latestInboundAtFmt = r.latest_inbound_at_fmt || '';
         const hasPhone = !!r.phone;
+        const replyCell = latestInboundText
+          ? `<button class="btn secondary sms-reply-btn" type="button" data-name="${esc(r.name)}" data-reply="${esc(latestInboundText)}" data-reply-at="${esc(latestInboundAtFmt)}">SMS</button>`
+          : `<span class="badge">-</span>`;
         const textCell = hasPhone
           ? `<button class="btn secondary text-btn" type="button" data-rsvp-id="${esc(r.id)}" data-phone="${esc(r.phone)}" data-seat-label="${esc(seatLabel)}">Text</button>`
           : `<span class="badge">-</span>`;
@@ -636,6 +663,7 @@
               Edit
             </button>
           </td>
+          <td data-label="Reply">${replyCell}</td>
           <td data-label="Text">${textCell}</td>
         </tr>`;
       }).join('');
@@ -749,6 +777,19 @@
         return;
       }
 
+      const replyBtn = e.target.closest('.sms-reply-btn');
+      if (replyBtn) {
+        if (smsReplyBody) smsReplyBody.textContent = replyBtn.getAttribute('data-reply') || '';
+        if (smsReplyMeta) {
+          const name = replyBtn.getAttribute('data-name') || 'Invitee';
+          const replyAt = replyBtn.getAttribute('data-reply-at') || '';
+          smsReplyMeta.textContent = replyAt ? `${name} • ${replyAt}` : name;
+          smsReplyMeta.style.display = 'inline-flex';
+        }
+        if (smsReplyModal) smsReplyModal.style.display = 'flex';
+        return;
+      }
+
       if (e.target.closest('button, a, input, select, form')) return;
       const row = e.target.closest('tr');
       if (!row) return;
@@ -758,8 +799,14 @@
       applyFilter();
     });
     closeBtn.addEventListener('click', () => { modal.style.display = 'none'; });
+    closeSmsReplyModalBtn && closeSmsReplyModalBtn.addEventListener('click', () => {
+      if (smsReplyModal) smsReplyModal.style.display = 'none';
+    });
     modal.addEventListener('click', (e) => {
       if (e.target === modal) modal.style.display = 'none';
+    });
+    smsReplyModal && smsReplyModal.addEventListener('click', (e) => {
+      if (e.target === smsReplyModal) smsReplyModal.style.display = 'none';
     });
 
     detailsForm && detailsForm.addEventListener('submit', (e) => e.preventDefault());
