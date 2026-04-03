@@ -17,7 +17,23 @@
   - remove people from that list
 - These lists can be reused for future games
 
-### 3) Create a Game
+### 3) Manage Invitees
+- Open `/invitees`
+- This is the organizer's global invitee directory
+- You can:
+  - search invitees
+  - add invitees
+  - edit name or phone
+  - delete invitees
+  - resend permission requests
+- Invitees show a status:
+  - `Unknown`
+  - `Pending`
+  - `Agreed`
+  - `Disagreed`
+- `Disagreed` invitees are visually muted and can be sent a new permission request by the organizer
+
+### 4) Create a Game
 - Open `/games/new`
 - Enter the title, location, date, time, and seat count
 - The date defaults to today
@@ -26,7 +42,7 @@
 - You can select one or more saved invite lists during creation
 - If lists are selected, invite SMS messages are sent as soon as the game is created
 
-### 4) Manage the Game Page
+### 5) Manage the Game Page
 - Open a game from the dashboard
 - The organizer page lets you:
   - copy invite text
@@ -38,8 +54,15 @@
   - assign seats manually
 - For multiple-table games, you can also manage co-organizers and table assignments
 
-### 5) Send Invitations and Announcements
+### 6) Send Invitations and Announcements
 - `Copy Invite Text` gives you a ready-to-send invite message
+- Invite text includes:
+  - game title
+  - `Hosted by {HOST}`
+  - date and time
+  - location
+  - one-line SMS reply instructions
+  - RSVP link
 - The announcement page lets you send a broadcast to filtered groups such as:
   - `IN`
   - `OUT`
@@ -58,7 +81,16 @@
   - `{{location}}`
   - `{{rsvp_link}}`
 
-### 6) Track RSVP Activity
+### 7) Invitee Permission Flow
+- New manual invitee entry requires the organizer to confirm:
+  - the number will only be used for private poker game invites through Poker Invite Manager
+- The recipient then receives:
+  - `Organizer {name} added you to Poker Invite Manager for private poker game invites. Reply AGREE to complete or DISAGREE if this was a mistake.`
+- `AGREE` is global to that phone number
+- Until a phone replies `AGREE`, normal game invite SMS is held
+- `DISAGREE` blocks invite SMS until the organizer sends a new permission request
+
+### 8) Track RSVP Activity
 - Invitees can reply from the web page or by SMS
 - Supported SMS commands include:
   - `IN`
@@ -67,6 +99,8 @@
   - `STANDBY`
   - `STATUS`
   - `VERIFY`
+  - `AGREE`
+  - `DISAGREE`
   - `MENU`
 - The app also understands conversational replies such as:
   - `I'm in`
@@ -77,18 +111,18 @@
 - On the organizer page, an `SMS` button appears when a player last replied by text
 - Clicking that button shows the latest actual inbound SMS message and timestamp
 
-### 7) Seat Assignment
+### 9) Seat Assignment
 - Seats are not assigned automatically just because enough players responded
 - Use `Assign Seats Now` when you want seat assignment to start
 - For single-table games, once the game becomes full, seats continue to fill automatically
 - Roster pages can be used as at-table signage and display response-time rankings
 
-### 8) Standby and Full Games
+### 10) Standby and Full Games
 - If the game is full, additional players can be added to standby
 - Standby order is tracked by response order
 - When seats open up, standby players can be promoted into the game
 
-### 9) Dashboard
+### 11) Dashboard
 - The dashboard shows your active and recent games
 - Use it to open a game, open the roster page, or create a new one
 - The dashboard no longer shows raw internal code or link pills; it focuses on the main actions
@@ -146,6 +180,7 @@
 ## Tips
 - Keep organizer phone numbers current if you rely on MFA by SMS
 - Invitee phone number is the primary identity key for RSVP matching
+- Invitee phone number is also the global SMS permission identity key
 - Reusable invite lists work well for phased invites:
   - invite `List A` when the game opens
   - invite `List B` later if more players are needed
@@ -154,5 +189,6 @@
 ## Troubleshooting
 - If a page looks stale after a design change, hard refresh the browser
 - If an invitee says they cannot be recognized, ask them to text `VERIFY` from their phone and open the returned link on the browser they plan to use
+- If an invitee is not receiving game invites, check their `/invitees` status first
 - If SMS replies are not updating the game, verify the phone number on the RSVP row matches the sender's number
 - If the site is unavailable, check `poker-app.service`
