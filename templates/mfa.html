@@ -1,11 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>MFA Verification</h1>
-{% if mfa_method == "totp" %}
 <p>Enter the 6-digit code from your authenticator app for {{ pending_name }}.</p>
-{% else %}
-<p>Enter the 6-digit code sent to your phone for {{ pending_name }}.</p>
-{% endif %}
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 {% if success %}<div class="notice notice-strong">{{ success }}</div>{% endif %}
 <form method="post" class="grid grid-2">
@@ -24,10 +20,4 @@
     <button class="btn" type="submit">Verify</button>
   </div>
 </form>
-{% if mfa_method != "totp" %}
-<form method="post" action="/mfa/resend" style="margin-top:10px;">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <button class="btn secondary" type="submit">Resend Code</button>
-</form>
-{% endif %}
 {% endblock %}

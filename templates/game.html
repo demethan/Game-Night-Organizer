@@ -174,7 +174,6 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="rsvp_token" id="rsvpToken" value="">
     <input type="hidden" name="invitee_token" id="inviteeToken" value="">
-    <input type="hidden" name="verification_code" id="verification_code" value="">
     <div>
       <div class="invite-label-row">
         <label style="margin:0;">Name</label>
@@ -185,14 +184,10 @@
     <div>
       <label>
         Cell (optional)
-        <span id="phoneVerifyBadge" class="badge" style="margin-left:6px; display:none;"></span>
-        <span style="font-size:11px; color:#94a3b8;">Used for verification and SMS confirmations.</span>
+        <span style="font-size:11px; color:#94a3b8;">Used to recognize you for this organizer's games.</span>
       </label>
       <div class="row" style="align-items:center; gap:8px;">
         <input type="tel" name="phone" id="phone" autocomplete="tel" placeholder="+1 (807) 555-1234" style="flex:1;">
-        {% if twilio_enabled %}
-        <button class="btn secondary" type="button" id="verifyPhoneBtn">Verify</button>
-        {% endif %}
       </div>
     </div>
     <div id="lateEtaWrap" style="display:none;">
@@ -215,32 +210,14 @@
 <div id="missingPhoneModal" class="modal" style="display:none;">
   <div class="modal-card">
     <h3>Add Your Cell Number?</h3>
-    <p style="margin-bottom:10px;">Add your number if you want verification and SMS updates for this game.</p>
+    <p style="margin-bottom:10px;">Add your number so this organizer can recognize you on future visits.</p>
     <div class="row" style="margin-top:12px;">
       <button class="btn" type="button" id="missingPhoneAddBtn">Add Number</button>
       <button class="btn secondary" type="button" id="missingPhoneSkipBtn">Skip</button>
     </div>
   </div>
 </div>
-{% if twilio_enabled %}
-<div id="verifyModal" class="modal" style="{% if verify_required %}display:flex;{% else %}display:none;{% endif %}">
-  <div class="modal-card">
-    <h3>Verify Your Phone</h3>
-    <p id="verifyModalMessage" style="margin-bottom:10px;">Enter the 6-digit code sent by text.</p>
-    <input type="text" id="verifyCodeInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
-    <div class="row" style="margin-top:12px;">
-      <button class="btn" type="button" id="verifyApplyBtn">Verify</button>
-      <button class="btn secondary" type="button" id="verifySendCodeBtn">Send Code</button>
-      <button class="btn secondary" type="button" id="verifyCloseBtn">Close</button>
-    </div>
-  </div>
-</div>
-{% endif %}
-
 <script nonce="{{ csp_nonce(request) }}">
-window._serverVerifiedPhone = window._serverVerifiedPhone || null;
-window._verifySendCooldownUntil = window._verifySendCooldownUntil || 0;
-const verifySenderHint = {{ (verify_sender_hint or 'our text number') | tojson }};
 (function() {
   const flash = document.getElementById('inviteFlashError');
   if (!flash) return;
@@ -357,9 +334,6 @@ const verifySenderHint = {{ (verify_sender_hint or 'our text number') | tojson }
         localStorage.setItem(inviteeTokenKey, data.invitee_token);
         if (inviteeTokenInput) inviteeTokenInput.value = data.invitee_token;
       }
-      if (data && data.verified && data.phone) {
-        window._serverVerifiedPhone = normalizeInvitePhone(data.phone);
-      }
       const responseStatus = String(data?.response_status || '').toUpperCase();
       if (alreadyVotedBox) {
         const isKnownResponse = responseStatus === 'IN' || responseStatus === 'OUT' || responseStatus === 'LATE' || responseStatus === 'HOST';
@@ -405,11 +379,6 @@ async function submitStatus(status, skipLatePrompt) {
     openMissingPhoneModal();
     return;
   }
-  if (normalized && {{ twilio_enabled | tojson }} && !isInvitePhoneVerified(normalized)) {
-    window._pendingStatus = status;
-    const verifyState = await sendVerifyCode();
-    if (verifyState === 'started') return;
-  }
   localStorage.setItem('poker_phone', (phoneInput?.value || '').trim());
   localStorage.setItem('poker_rsvp_{{ game["code"] }}', status);
   document.getElementById('status').value = status;
@@ -420,16 +389,6 @@ function normalizeInvitePhone(value) {
   let digits = String(value || '').replace(/[^0-9]/g, '');
   if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
   return digits.length === 10 ? digits : '';
-}
-
-function verifiedInvitePhoneKey() {
-  return 'poker_verified_phone_{{ game["code"] }}';
-}
-
-function isInvitePhoneVerified(normalizedPhone) {
-  if (!normalizedPhone) return false;
-  if (localStorage.getItem(verifiedInvitePhoneKey()) === normalizedPhone) return true;
-  return window._serverVerifiedPhone === normalizedPhone;
 }
 
 function openMissingPhoneModal() {
@@ -452,99 +411,6 @@ function skipPhoneAndContinue() {
   closeMissingPhoneModal();
   window._skipPhonePrompt = true;
   submitStatus(window._pendingStatus || 'IN', true);
-}
-
-function maskPhoneForUi(value) {
-  const digits = normalizeInvitePhone(value || '');
-  if (!digits) return '';
-  return `+1 ***-***-${digits.slice(-4)}`;
-}
-
-function startVerifySendCooldown(seconds) {
-  const sendBtn = document.getElementById('verifySendCodeBtn');
-  if (!sendBtn) return;
-  window._verifySendCooldownUntil = Date.now() + (seconds * 1000);
-  const tick = () => {
-    const leftMs = window._verifySendCooldownUntil - Date.now();
-    if (leftMs <= 0) {
-      sendBtn.disabled = false;
-      sendBtn.textContent = 'Send Code';
-      return;
-    }
-    const left = Math.ceil(leftMs / 1000);
-    sendBtn.disabled = true;
-    sendBtn.textContent = `Send Code (${left}s)`;
-    setTimeout(tick, 250);
-  };
-  tick();
-}
-
-async function sendVerifyCode() {
-  const phoneInput = document.getElementById('phone');
-  const phone = (phoneInput?.value || '').trim();
-  const normalized = normalizeInvitePhone(phone);
-  const verifyBtn = document.getElementById('verifyPhoneBtn');
-  const verifyMessage = document.getElementById('verifyModalMessage');
-  if (!normalized) {
-    if (phoneInput) phoneInput.focus();
-    return false;
-  }
-  if (verifyBtn) verifyBtn.disabled = true;
-  try {
-    const body = new URLSearchParams();
-    body.set('phone', phone);
-    body.set('csrf_token', document.querySelector('#rsvpForm input[name="csrf_token"]').value || '');
-    const response = await fetch('/g/{{ game["code"] }}/verify/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
-    const data = await response.json();
-    if (!response.ok || !data.ok) {
-      alert(data.error || 'Could not send verification code.');
-      return false;
-    }
-    if (data.already_verified) {
-      localStorage.setItem(verifiedInvitePhoneKey(), normalized);
-      updateInviteVerifyBadge();
-      if (verifyMessage) verifyMessage.textContent = `Phone ${maskPhoneForUi(phone)} is already verified.`;
-      return 'verified';
-    }
-    if (verifyMessage) verifyMessage.textContent = `Check your texts on ${maskPhoneForUi(phone)}. The 6-digit code should come from ${verifySenderHint}.`;
-    startVerifySendCooldown(30);
-    openVerifyModal();
-    return 'started';
-  } catch (e) {
-    alert('Could not send verification code.');
-    return false;
-  } finally {
-    if (verifyBtn) verifyBtn.disabled = false;
-  }
-}
-
-function updateInviteVerifyBadge() {
-  const badge = document.getElementById('phoneVerifyBadge');
-  const phoneInput = document.getElementById('phone');
-  const verifyBtn = document.getElementById('verifyPhoneBtn');
-  if (!badge || !phoneInput) return;
-  const normalized = normalizeInvitePhone(phoneInput.value || '');
-  if (!normalized) {
-    badge.style.display = 'none';
-    badge.textContent = '';
-    if (verifyBtn) {
-      verifyBtn.style.display = '';
-      verifyBtn.disabled = true;
-    }
-    return;
-  }
-  if (verifyBtn) verifyBtn.style.display = '';
-  badge.style.display = 'inline-flex';
-  const verified = isInvitePhoneVerified(normalized);
-  badge.textContent = verified ? '✓ Verified' : 'Not verified';
-  if (verifyBtn) {
-    verifyBtn.style.display = verified ? 'none' : '';
-    verifyBtn.disabled = verified;
-  }
 }
 
 function openLateModal() {
@@ -583,63 +449,6 @@ function toggleInfo() {
   el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
 }
 
-function openVerifyModal() {
-  const modal = document.getElementById('verifyModal');
-  const input = document.getElementById('verifyCodeInput');
-  if (!modal) return;
-  modal.style.display = 'flex';
-  if (input) {
-    input.value = document.getElementById('verification_code')?.value || '';
-    input.focus();
-  }
-}
-
-function closeVerifyModal() {
-  const modal = document.getElementById('verifyModal');
-  if (!modal) return;
-  modal.style.display = 'none';
-}
-
-function applyVerifyCode() {
-  const input = document.getElementById('verifyCodeInput');
-  const code = (input?.value || '').trim();
-  if (!code) {
-    input && input.focus();
-    return;
-  }
-  const phoneInput = document.getElementById('phone');
-  const normalized = normalizeInvitePhone(phoneInput?.value || '');
-  if (!normalized) {
-    phoneInput && phoneInput.focus();
-    return;
-  }
-  const body = new URLSearchParams();
-  body.set('phone', phoneInput.value || '');
-  body.set('verification_code', code);
-  body.set('csrf_token', document.querySelector('#rsvpForm input[name="csrf_token"]').value || '');
-  fetch('/g/{{ game["code"] }}/verify/check', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  })
-    .then(async (response) => {
-      const data = await response.json();
-      if (!response.ok || !data.ok) {
-        alert(data.error || 'Invalid verification code.');
-        return;
-      }
-      localStorage.setItem(verifiedInvitePhoneKey(), normalized);
-      updateInviteVerifyBadge();
-      closeVerifyModal();
-      const pending = window._pendingStatus;
-      window._pendingStatus = null;
-      if (pending) submitStatus(pending, true);
-    })
-    .catch(() => {
-      alert('Could not verify phone number.');
-    });
-}
-
 (function() {
   const inBtn = document.getElementById('inviteInBtn');
   const outBtn = document.getElementById('inviteOutBtn');
@@ -649,10 +458,6 @@ function applyVerifyCode() {
   const lateCancelBtn = document.getElementById('lateCancelBtn');
   const missingAddBtn = document.getElementById('missingPhoneAddBtn');
   const missingSkipBtn = document.getElementById('missingPhoneSkipBtn');
-  const verifyApplyBtn = document.getElementById('verifyApplyBtn');
-  const verifySendBtn = document.getElementById('verifySendCodeBtn');
-  const verifyCloseBtn = document.getElementById('verifyCloseBtn');
-  const verifyBtn = document.getElementById('verifyPhoneBtn');
   const phoneInput = document.getElementById('phone');
   inBtn && inBtn.addEventListener('click', () => { submitStatus('IN'); });
   outBtn && outBtn.addEventListener('click', () => { submitStatus('OUT'); });
@@ -662,21 +467,11 @@ function applyVerifyCode() {
   lateCancelBtn && lateCancelBtn.addEventListener('click', () => { closeLateModal(); });
   missingAddBtn && missingAddBtn.addEventListener('click', () => { focusPhoneField(); });
   missingSkipBtn && missingSkipBtn.addEventListener('click', () => { skipPhoneAndContinue(); });
-  verifyApplyBtn && verifyApplyBtn.addEventListener('click', () => { applyVerifyCode(); });
-  verifySendBtn && verifySendBtn.addEventListener('click', () => { sendVerifyCode(); });
-  verifyCloseBtn && verifyCloseBtn.addEventListener('click', () => { closeVerifyModal(); });
-  if (verifyBtn) {
-    verifyBtn.addEventListener('click', () => { sendVerifyCode(); });
-  }
   if (phoneInput) {
     phoneInput.addEventListener('input', () => {
       window._skipPhonePrompt = false;
-      if (localStorage.getItem(verifiedInvitePhoneKey()) !== normalizeInvitePhone(phoneInput.value || '')) {
-        updateInviteVerifyBadge();
-      }
     });
   }
-  updateInviteVerifyBadge();
 })();
 
 (function() {

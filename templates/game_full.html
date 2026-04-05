@@ -44,12 +44,9 @@
       <input type="text" name="name" id="standbyName" required>
     </div>
     <div class="standby-field">
-      <label>Cell (optional) <span id="standbyPhoneVerifyBadge" class="badge" style="margin-left:6px; display:none;"></span></label>
+      <label>Cell (optional)</label>
       <div class="row" style="align-items:center; gap:8px;">
         <input type="tel" name="phone" id="standbyPhone" placeholder="+1 (807) 555-1234" style="flex:1;">
-        {% if twilio_enabled %}
-        <button class="btn secondary" type="button" id="standbyVerifyPhoneBtn">Verify</button>
-        {% endif %}
       </div>
     </div>
     <div class="form-actions standby-field">
@@ -60,32 +57,14 @@
 <div id="standbyMissingPhoneModal" class="modal" style="display:none;">
   <div class="modal-card">
     <h3>Add Your Cell Number?</h3>
-    <p style="margin-bottom:10px;">Add your number if you want verification and SMS updates for this game.</p>
+    <p style="margin-bottom:10px;">Add your number so this organizer can recognize you on future visits.</p>
     <div class="row" style="margin-top:12px;">
       <button class="btn" type="button" id="standbyMissingAddBtn">Add Number</button>
       <button class="btn secondary" type="button" id="standbyMissingSkipBtn">Skip</button>
     </div>
   </div>
 </div>
-{% if twilio_enabled %}
-<div id="standbyVerifyModal" class="modal" style="{% if verify_required %}display:flex;{% else %}display:none;{% endif %}">
-  <div class="modal-card">
-    <h3>Verify Your Phone</h3>
-    <p id="standbyVerifyModalMessage" style="margin-bottom:10px;">Enter the 6-digit code sent by text.</p>
-    <input type="text" id="standbyVerificationCodeInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
-    <div class="row" style="margin-top:12px;">
-      <button class="btn" type="button" id="standbyVerifyApplyBtn">Verify</button>
-      <button class="btn secondary" type="button" id="standbyVerifySendCodeBtn">Send Code</button>
-      <button class="btn secondary" type="button" id="standbyVerifyCloseBtn">Close</button>
-    </div>
-  </div>
-</div>
-{% endif %}
-
 <script nonce="{{ csp_nonce(request) }}">
-window._standbyServerVerifiedPhone = window._standbyServerVerifiedPhone || null;
-window._standbyVerifySendCooldownUntil = window._standbyVerifySendCooldownUntil || 0;
-const standbyVerifySenderHint = {{ (verify_sender_hint or 'our text number') | tojson }};
 (function() {
   const flash = document.getElementById('inviteFullFlashError');
   if (!flash) return;
@@ -149,17 +128,12 @@ const standbyVerifySenderHint = {{ (verify_sender_hint or 'our text number') | t
         localStorage.setItem(inviteeTokenKey, data.invitee_token);
         if (inviteeTokenInput) inviteeTokenInput.value = data.invitee_token;
       }
-      if (data && data.verified && data.phone) {
-        window._standbyServerVerifiedPhone = normalizeStandbyPhone(data.phone);
-      }
       const responseStatus = String(data?.response_status || '').toUpperCase();
       applyInviteeResponseState(responseStatus, data?.response_seat_label || '', data?.response_rsvp_id || '');
-      updateStandbyPhoneVerifyBadge();
     } catch (e) {}
   }
 
   syncContactFromServer(savedName || '');
-  updateStandbyPhoneVerifyBadge();
 })();
 
 document.getElementById('standbyForm').addEventListener('submit', async function(event) {
@@ -174,10 +148,6 @@ document.getElementById('standbyForm').addEventListener('submit', async function
   if (!normalized && !window._skipStandbyPhonePrompt) {
     openStandbyMissingPhoneModal();
     return;
-  }
-  if (normalized && {{ twilio_enabled | tojson }} && !isStandbyPhoneVerified(normalized)) {
-    const verifyState = await sendStandbyVerifyCode();
-    if (verifyState === 'started') return;
   }
   localStorage.setItem('poker_standby_{{ game["code"] }}', '1');
   event.target.submit();
@@ -256,56 +226,10 @@ function applyInviteeTableDividers() {
   });
 }
 
-function openStandbyVerifyModal() {
-  const modal = document.getElementById('standbyVerifyModal');
-  const input = document.getElementById('standbyVerificationCodeInput');
-  if (!modal) return;
-  modal.style.display = 'flex';
-  if (input) {
-    input.value = document.getElementById('standbyVerificationCodeHidden')?.value || '';
-    input.focus();
-  }
-}
-
 function normalizeStandbyPhone(value) {
   let digits = String(value || '').replace(/[^0-9]/g, '');
   if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
   return digits.length === 10 ? digits : '';
-}
-
-function standbyVerifiedPhoneKey() {
-  return 'poker_verified_phone_{{ game["code"] }}';
-}
-
-function isStandbyPhoneVerified(normalizedPhone) {
-  if (!normalizedPhone) return false;
-  if (localStorage.getItem(standbyVerifiedPhoneKey()) === normalizedPhone) return true;
-  return window._standbyServerVerifiedPhone === normalizedPhone;
-}
-
-function updateStandbyPhoneVerifyBadge() {
-  const verifyBadge = document.getElementById('standbyPhoneVerifyBadge');
-  const phoneInput = document.getElementById('standbyPhone');
-  const verifyBtn = document.getElementById('standbyVerifyPhoneBtn');
-  if (!verifyBadge || !phoneInput) return;
-  const normalized = normalizeStandbyPhone(phoneInput.value || '');
-  if (!normalized) {
-    verifyBadge.style.display = 'none';
-    verifyBadge.textContent = '';
-    if (verifyBtn) {
-      verifyBtn.style.display = '';
-      verifyBtn.disabled = true;
-    }
-    return;
-  }
-  if (verifyBtn) verifyBtn.style.display = '';
-  verifyBadge.style.display = 'inline-flex';
-  const verified = isStandbyPhoneVerified(normalized);
-  verifyBadge.textContent = verified ? '✓ Verified' : 'Not verified';
-  if (verifyBtn) {
-    verifyBtn.style.display = verified ? 'none' : '';
-    verifyBtn.disabled = verified;
-  }
 }
 
 function openStandbyMissingPhoneModal() {
@@ -330,141 +254,17 @@ function skipStandbyPhoneAndContinue() {
   document.getElementById('standbyForm').requestSubmit();
 }
 
-function maskStandbyPhoneForUi(value) {
-  const digits = normalizeStandbyPhone(value || '');
-  if (!digits) return '';
-  return `+1 ***-***-${digits.slice(-4)}`;
-}
-
-function startStandbyVerifySendCooldown(seconds) {
-  const sendBtn = document.getElementById('standbyVerifySendCodeBtn');
-  if (!sendBtn) return;
-  window._standbyVerifySendCooldownUntil = Date.now() + (seconds * 1000);
-  const tick = () => {
-    const leftMs = window._standbyVerifySendCooldownUntil - Date.now();
-    if (leftMs <= 0) {
-      sendBtn.disabled = false;
-      sendBtn.textContent = 'Send Code';
-      return;
-    }
-    const left = Math.ceil(leftMs / 1000);
-    sendBtn.disabled = true;
-    sendBtn.textContent = `Send Code (${left}s)`;
-    setTimeout(tick, 250);
-  };
-  tick();
-}
-
-async function sendStandbyVerifyCode() {
-  const phoneInput = document.getElementById('standbyPhone');
-  const phone = (phoneInput?.value || '').trim();
-  const normalized = normalizeStandbyPhone(phone);
-  const verifyBtn = document.getElementById('standbyVerifyPhoneBtn');
-  const verifyMessage = document.getElementById('standbyVerifyModalMessage');
-  if (!normalized) {
-    if (phoneInput) phoneInput.focus();
-    return false;
-  }
-  if (verifyBtn) verifyBtn.disabled = true;
-  try {
-    const body = new URLSearchParams();
-    body.set('phone', phone);
-    body.set('csrf_token', document.querySelector('#standbyForm input[name="csrf_token"]').value || '');
-    const response = await fetch('/g/{{ game["code"] }}/verify/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
-    const data = await response.json();
-    if (!response.ok || !data.ok) {
-      alert(data.error || 'Could not send verification code.');
-      return false;
-    }
-    if (data.already_verified) {
-      localStorage.setItem(standbyVerifiedPhoneKey(), normalized);
-      updateStandbyPhoneVerifyBadge();
-      if (verifyMessage) verifyMessage.textContent = `Phone ${maskStandbyPhoneForUi(phone)} is already verified.`;
-      return 'verified';
-    }
-    if (verifyMessage) verifyMessage.textContent = `Check your texts on ${maskStandbyPhoneForUi(phone)}. The 6-digit code should come from ${standbyVerifySenderHint}.`;
-    startStandbyVerifySendCooldown(30);
-    openStandbyVerifyModal();
-    return 'started';
-  } catch (e) {
-    alert('Could not send verification code.');
-    return false;
-  } finally {
-    if (verifyBtn) verifyBtn.disabled = false;
-  }
-}
-
-function closeStandbyVerifyModal() {
-  const modal = document.getElementById('standbyVerifyModal');
-  if (!modal) return;
-  modal.style.display = 'none';
-}
-
-function applyStandbyVerifyCode() {
-  const input = document.getElementById('standbyVerificationCodeInput');
-  const code = (input?.value || '').trim();
-  if (!code) {
-    input && input.focus();
-    return;
-  }
-  const phoneInput = document.getElementById('standbyPhone');
-  const normalized = normalizeStandbyPhone(phoneInput?.value || '');
-  if (!normalized) {
-    phoneInput && phoneInput.focus();
-    return;
-  }
-  const body = new URLSearchParams();
-  body.set('phone', phoneInput.value || '');
-  body.set('verification_code', code);
-  body.set('csrf_token', document.querySelector('#standbyForm input[name="csrf_token"]').value || '');
-  fetch('/g/{{ game["code"] }}/verify/check', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  })
-    .then(async (response) => {
-      const data = await response.json();
-      if (!response.ok || !data.ok) {
-        alert(data.error || 'Invalid verification code.');
-        return;
-      }
-      localStorage.setItem(standbyVerifiedPhoneKey(), normalized);
-      updateStandbyPhoneVerifyBadge();
-      closeStandbyVerifyModal();
-      document.getElementById('standbyForm').requestSubmit();
-    })
-    .catch(() => {
-      alert('Could not verify phone number.');
-    });
-}
-
 (function() {
   const missingAddBtn = document.getElementById('standbyMissingAddBtn');
   const missingSkipBtn = document.getElementById('standbyMissingSkipBtn');
-  const verifyApplyBtn = document.getElementById('standbyVerifyApplyBtn');
-  const verifySendBtn = document.getElementById('standbyVerifySendCodeBtn');
-  const verifyCloseBtn = document.getElementById('standbyVerifyCloseBtn');
   const phoneInput = document.getElementById('standbyPhone');
-  const verifyBtn = document.getElementById('standbyVerifyPhoneBtn');
   missingAddBtn && missingAddBtn.addEventListener('click', () => { focusStandbyPhoneField(); });
   missingSkipBtn && missingSkipBtn.addEventListener('click', () => { skipStandbyPhoneAndContinue(); });
-  verifyApplyBtn && verifyApplyBtn.addEventListener('click', () => { applyStandbyVerifyCode(); });
-  verifySendBtn && verifySendBtn.addEventListener('click', () => { sendStandbyVerifyCode(); });
-  verifyCloseBtn && verifyCloseBtn.addEventListener('click', () => { closeStandbyVerifyModal(); });
   if (phoneInput) {
     phoneInput.addEventListener('input', () => {
       window._skipStandbyPhonePrompt = false;
-      updateStandbyPhoneVerifyBadge();
     });
   }
-  if (verifyBtn) {
-    verifyBtn.addEventListener('click', () => { sendStandbyVerifyCode(); });
-  }
-  updateStandbyPhoneVerifyBadge();
 })();
 </script>
 {% endblock %}

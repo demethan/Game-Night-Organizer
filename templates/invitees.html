@@ -132,12 +132,6 @@
         <label>Cell</label>
         <input type="tel" name="phone" placeholder="+1 (807) 555-1234" required>
       </div>
-      <div>
-        <label style="display:flex; align-items:flex-start; gap:8px; margin:0;">
-          <input type="checkbox" name="private_use_only" value="1" style="width:auto; margin-top:2px;" required>
-          <span>This number will only be used for private poker game invites through Poker Invite Manager.</span>
-        </label>
-      </div>
       <div class="row">
         <button class="btn" type="submit">Save Invitee</button>
       </div>
@@ -153,15 +147,11 @@
   {% if invitees and invitees|length > 0 %}
   <div class="grid" style="margin-top:12px;">
     {% for invitee in invitees %}
-    {% set consent_status = (invitee['consent_status'] or 'unknown')|lower %}
-    <div class="invitee-directory-card{% if consent_status == 'disagreed' %} is-muted{% endif %}" data-invitee-card>
+    <div class="invitee-directory-card" data-invitee-card>
       <div style="min-width:0; width:100%;">
         <div class="invitee-directory-meta">
           <div class="invitee-directory-name">{{ invitee['name'] }}</div>
           <div class="invitee-directory-phone">{{ invitee['phone'] | fmt_phone }}</div>
-          <div class="invitee-directory-status is-{{ consent_status }}">
-            {% if consent_status == 'agreed' %}Agreed{% elif consent_status == 'pending' %}Pending{% elif consent_status == 'disagreed' %}Disagreed{% else %}Unknown{% endif %}
-          </div>
         </div>
         <div class="invitee-directory-edit">
           <form method="post" action="/invitees/{{ invitee['id'] }}/update" class="grid">
@@ -183,13 +173,6 @@
         </div>
       </div>
       <div class="invitee-directory-actions">
-        {% if consent_status != 'agreed' %}
-        <form method="post" action="/invitees/{{ invitee['id'] }}/consent-request">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-          <input type="hidden" name="q" value="{{ query }}">
-          <button class="btn secondary invitee-compact-btn" type="submit">Request Permission</button>
-        </form>
-        {% endif %}
         <button class="btn secondary invitee-edit-toggle invitee-compact-btn" type="button"><span class="edit-toggle-label">Edit</span></button>
         <form method="post" action="/invitees/{{ invitee['id'] }}/delete" onsubmit="return confirm('Delete this invitee from your directory and saved lists? Past RSVPs will stay in games.');">
           <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">

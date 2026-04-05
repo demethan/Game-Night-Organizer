@@ -14,37 +14,16 @@
   <h3>Phone & MFA</h3>
   <form method="post" class="grid grid-2">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <input type="hidden" name="action" value="send_phone_code">
+    <input type="hidden" name="action" value="update_phone">
     <div>
       <label>Phone</label>
       <input type="tel" name="phone" autocomplete="tel" placeholder="+1 (807) 555-1234" value="{{ user['phone'] or '' }}">
     </div>
     <div>
-      <button class="btn" type="submit">Send Verification Code</button>
+      <button class="btn" type="submit">Save Phone</button>
     </div>
   </form>
-
-  <form method="post" class="grid grid-2" style="margin-top:10px;">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <input type="hidden" name="action" value="verify_phone">
-    <div>
-      <label>Verification Code</label>
-      <input type="text" name="verification_code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
-      <input type="hidden" name="phone" value="{{ user['phone'] or '' }}">
-    </div>
-    <div>
-      <button class="btn secondary" type="submit">Verify Phone</button>
-    </div>
-  </form>
-
-  <p style="margin-top:8px;">
-    Phone status:
-    {% if user['phone_verified_at'] %}
-      <span class="badge">Verified</span>
-    {% else %}
-      <span class="badge">Not Verified</span>
-    {% endif %}
-  </p>
+  <p style="margin-top:8px;">Phone is optional. MFA uses your authenticator app only.</p>
 
   <form method="post" style="margin-top:10px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
