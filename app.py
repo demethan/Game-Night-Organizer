@@ -1206,18 +1206,16 @@ def game_host_name(conn: sqlite3.Connection, game_id: int, fallback: Optional[st
 
 
 def build_invite_sms_text(request: Request, game_row, seat_label: Optional[str], host_name: Optional[str] = None) -> str:
+    host_label = (host_name or "").strip() or "Host"
     lines = [
-        str(game_row["title"]),
-        f"Hosted by {host_name}" if (host_name or "").strip() else None,
-        f"When: {game_row['game_date']} at {format_game_time(game_row['game_time'])}",
-        f"Where: {game_row['location']}",
-        "",
-        "Text back: IN, OUT, or LATE 7:30PM",
+        f"{host_label} invited you to a private game.",
+        f"{game_row['game_date']} at {format_game_time(game_row['game_time'])}",
+        str(game_row["location"]),
+        "Reply IN, OUT, or LATE 7:30PM",
     ]
     if seat_label:
         lines.append(f"Seat: {seat_label}")
-    lines.append("")
-    lines.append(invite_link(request, game_row["code"]))
+    lines.append("Reply STOP to unsubscribe.")
     return "\n".join([line for line in lines if line is not None])
 
 
@@ -1236,6 +1234,7 @@ def send_game_invite_sms(conn: sqlite3.Connection, request: Request, game_row, p
                     conn,
                     organizer_name,
                     phone_10,
+                    invitee_name=(global_row["name"] or "").strip() if global_row["name"] else None,
                     game_id=int(game_row["id"]),
                 )
                 if sent:
@@ -1696,12 +1695,11 @@ def set_global_invitee_consent(
     )
 
 
-def build_invitee_consent_request_sms(organizer_name: str) -> str:
+def build_invitee_consent_request_sms(organizer_name: str, invitee_name: Optional[str] = None) -> str:
     display_name = (organizer_name or "").strip() or "An organizer"
-    return (
-        f"Organizer {display_name} added you to Poker Invite Manager for private poker game invites. "
-        "Reply AGREE to complete or DISAGREE if this was a mistake."
-    )
+    greeting_name = (invitee_name or "").strip()
+    greeting = f"Hi {greeting_name}, " if greeting_name else "Hi, "
+    return f"{greeting}{display_name} wants to text you about a game. Reply AGREE to allow messages or STOP to opt out."
 
 
 def send_invitee_consent_request_sms(
@@ -1709,9 +1707,10 @@ def send_invitee_consent_request_sms(
     organizer_name: str,
     phone_10: str,
     *,
+    invitee_name: Optional[str] = None,
     game_id: Optional[int] = None,
 ) -> tuple[bool, str]:
-    body = build_invitee_consent_request_sms(organizer_name)
+    body = build_invitee_consent_request_sms(organizer_name, invitee_name)
     sent, result = send_twilio_sms_guarded(conn, game_id, phone_10, body, "invitee_consent_request")
     if sent:
         set_global_invitee_consent(
@@ -1732,11 +1731,12 @@ def mark_global_invitee_pending_private_use(
     phone_10: str,
 ) -> tuple[bool, str]:
     existing = global_invitee_row(conn, phone_10)
+    invitee_name = (existing["name"] or "").strip() if existing and existing["name"] else None
     if existing:
         status = str(existing["consent_status"] or "unknown").strip().lower()
         if status == "agreed" and int(existing["non_commercial_only"] or 0) == 1:
             return False, "already_agreed"
-    return send_invitee_consent_request_sms(conn, organizer_name, phone_10)
+    return send_invitee_consent_request_sms(conn, organizer_name, phone_10, invitee_name=invitee_name)
 
 
 def latest_pending_global_invitee_for_phone(conn: sqlite3.Connection, phone_10: str) -> Optional[sqlite3.Row]:
@@ -2360,21 +2360,27 @@ def maybe_notify_organizer_when_out(
 
 def notify_game_cancelled_sms(conn: sqlite3.Connection, game_row) -> None:
     cur = conn.cursor()
-    recipients = set()
-    cur.execute("SELECT phone FROM rsvps WHERE game_id = ? AND phone IS NOT NULL", (game_row["id"],))
+    recipients = {}
+    cur.execute("SELECT phone, name FROM rsvps WHERE game_id = ? AND phone IS NOT NULL", (game_row["id"],))
     for row in cur.fetchall():
         phone = (row["phone"] or "").strip()
         if len(phone) == 10 and phone.isdigit():
-            recipients.add(phone)
-    cur.execute("SELECT phone FROM standby WHERE game_id = ? AND phone IS NOT NULL", (game_row["id"],))
+            name = (row["name"] or "").strip()
+            if phone not in recipients or name:
+                recipients[phone] = name
+    cur.execute("SELECT phone, name FROM standby WHERE game_id = ? AND phone IS NOT NULL", (game_row["id"],))
     for row in cur.fetchall():
         phone = (row["phone"] or "").strip()
         if len(phone) == 10 and phone.isdigit():
-            recipients.add(phone)
+            name = (row["name"] or "").strip()
+            if phone not in recipients or name:
+                recipients[phone] = name
     if not recipients:
         return
-    body = f"{game_row['title']} has been cancelled. Please do not come to the game location."
     for phone in sorted(recipients):
+        invitee_name = (recipients.get(phone) or "").strip()
+        greeting = f"Hi {invitee_name}, " if invitee_name else "Hi, "
+        body = f"{greeting}game is cancelled.\nReply STOP to unsubscribe."
         send_twilio_sms_guarded(conn, int(game_row["id"]), phone, body, "cancel_notice")
 
 
@@ -2862,10 +2868,17 @@ def relevant_games_for_phone(conn: sqlite3.Connection, phone_10: str) -> list:
             SELECT game_id FROM rsvps WHERE phone = ?
             UNION
             SELECT game_id FROM standby WHERE phone = ?
+            UNION
+            SELECT game_id
+            FROM sms_outbound
+            WHERE phone = ?
+              AND kind = 'organizer_text'
+              AND sent_ok = 1
+              AND game_id IS NOT NULL
         )
         ORDER BY g.game_date ASC, g.game_time ASC, g.id ASC
         """,
-        (phone_10, phone_10),
+        (phone_10, phone_10, phone_10),
     )
     rows = []
     for row in cur.fetchall():
@@ -2934,7 +2947,7 @@ def best_game_code_for_phone(conn: sqlite3.Connection, phone_10: str) -> Optiona
 
 def build_inbound_help_text() -> str:
     return (
-        "Commands: MENU, STATUS, VERIFY, AGREE, DISAGREE, IN, OUT, LATE 7:30PM, STANDBY. "
+        "Commands: MENU, STATUS, LINK, VERIFY, AGREE, DISAGREE, IN, OUT, LATE 7:30PM, STANDBY. "
         "If your number is linked to more than one current game, open the RSVP link to choose the game."
     )
 
@@ -2987,10 +3000,16 @@ def interpret_inbound_sms_text(raw_text: str) -> str:
     if not text:
         return ""
 
+    if text == "STOP":
+        return "STOP"
+    if text in {"START", "UNSTOP"}:
+        return "START"
     if text in {"MENU", "HELP"}:
         return "MENU"
     if text == "STATUS":
         return "STATUS"
+    if text == "LINK":
+        return "LINK"
     if text == "VERIFY":
         return "VERIFY"
     if text == "AGREE":
@@ -3005,6 +3024,12 @@ def interpret_inbound_sms_text(raw_text: str) -> str:
 
     if " VERIFY " in compact or " VERIFIED " in compact or " VERIFICATION " in compact:
         return "VERIFY"
+    if " LINK " in compact or " RSVP LINK " in compact or " SEND LINK " in compact:
+        return "LINK"
+    if " STOP " in compact:
+        return "STOP"
+    if " START " in compact or " UNSTOP " in compact:
+        return "START"
     if " AGREE " in compact or " I AGREE " in compact:
         return "AGREE"
     if " DISAGREE " in compact or " I DISAGREE " in compact:
@@ -3279,12 +3304,50 @@ def handle_inbound_sms_command(conn: sqlite3.Connection, request: Request, phone
         return build_inbound_help_text()
     if upper == "STATUS":
         return build_inbound_status_text(conn, phone_10)
+    if upper == "LINK":
+        games = relevant_games_for_phone(conn, phone_10)
+        if not games:
+            return "No current game found for this number. Reply VERIFY to sync your invite identity."
+        if len(games) != 1:
+            return build_inbound_status_text(conn, phone_10) + "\nOpen the specific RSVP link from your original invite."
+        body = (
+            f"As requested, here is the link to the game {invite_link(request, games[0]['code'])}\n"
+            "Reply STOP to unsubscribe."
+        )
+        sent, _ = send_twilio_sms_guarded(
+            conn,
+            int(games[0]["id"]),
+            phone_10,
+            body,
+            "link_reply",
+        )
+        if sent:
+            return None
+        return "Could not send the link right now. Please use your original invite."
     if upper == "VERIFY":
         if phone_is_globally_verified(conn, phone_10):
             return "This number is already verified for invitee identity."
         token = create_invitee_verify_link_token(phone_10)
         verify_link = f"{public_base_url(request)}/invitee/verify?t={urllib.parse.quote(token)}"
         return f"Open this link to verify and sync your invite identity: {verify_link}"
+    if upper == "STOP":
+        set_global_invitee_consent(
+            conn,
+            phone_10,
+            status="disagreed",
+            source="sms_stop",
+            non_commercial_only=True,
+        )
+        return "You have been unsubscribed from Poker Invite Manager texts for this number."
+    if upper == "START":
+        set_global_invitee_consent(
+            conn,
+            phone_10,
+            status="agreed",
+            source="sms_start",
+            non_commercial_only=True,
+        )
+        return "Text messaging is enabled again for this number."
     if upper in {"AGREE", "DISAGREE"}:
         pending_row = latest_pending_global_invitee_for_phone(conn, phone_10)
         if not pending_row:
@@ -3346,8 +3409,21 @@ def apple_touch_icon_precomposed():
     return RedirectResponse(url="/static/apple-touch-icon-app.png", status_code=302)
 
 
+@app.get("/2436e4e916bd7e6bcd16ae6a02c01433.html")
+def twilio_domain_verification():
+    return PlainTextResponse(
+        "twilio-domain-verification=2436e4e916bd7e6bcd16ae6a02c01433",
+        media_type="text/plain",
+    )
+
+
 @app.post("/twilio/sms/inbound")
-def twilio_sms_inbound(request: Request, From: str = Form(None), Body: str = Form(None)):
+def twilio_sms_inbound(
+    request: Request,
+    From: str = Form(None),
+    Body: str = Form(None),
+    OptOutType: str = Form(None),
+):
     # Optional shared token guard: include ?token=... in the Twilio webhook URL.
     inbound_token = (os.getenv("TWILIO_INBOUND_TOKEN") or "").strip()
     if inbound_token:
@@ -3364,9 +3440,15 @@ def twilio_sms_inbound(request: Request, From: str = Form(None), Body: str = For
 
     conn = get_db()
     try:
-        interpreted = interpret_inbound_sms_text(Body or "")
-        log_sms_inbound(conn, phone_10, Body or "", interpreted)
-        text = handle_inbound_sms_command(conn, request, phone_10, Body or "")
+        opt_out_type = (OptOutType or "").strip().upper()
+        effective_body = Body or ""
+        if opt_out_type == "STOP":
+            effective_body = "STOP"
+        elif opt_out_type in {"START", "UNSTOP"}:
+            effective_body = "START"
+        interpreted = interpret_inbound_sms_text(effective_body)
+        log_sms_inbound(conn, phone_10, effective_body, interpreted)
+        text = handle_inbound_sms_command(conn, request, phone_10, effective_body)
         conn.commit()
     finally:
         conn.close()
@@ -4908,13 +4990,16 @@ def organizer_send_text(request: Request, game_id: int, rsvp_id: int, csrf_token
             game["total_players"],
             game_uses_multiple_tables(game),
         )
-        message = build_invite_sms_text(request, game, seat_label)
+        host_name = game_host_name(conn, int(game["id"]), game["organizer_name"] if "organizer_name" in game.keys() else None)
+        message = build_invite_sms_text(request, game, seat_label, host_name)
         sent, result = send_twilio_sms_guarded(conn, game_id, rsvp["phone"], message, "organizer_text")
         if not sent:
+            conn.commit()
             return JSONResponse(
                 {"ok": False, "provider": "twilio", "error": result},
                 status_code=503,
             )
+        conn.commit()
         return JSONResponse({"ok": True, "provider": "twilio", "message_sid": result})
     finally:
         conn.close()
