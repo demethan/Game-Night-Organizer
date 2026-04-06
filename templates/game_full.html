@@ -54,6 +54,17 @@
     </div>
   </form>
 </div>
+{% if web_push_enabled() %}
+<div class="card">
+  <h3 style="margin-top:0;">Browser Notifications</h3>
+  <p style="margin-bottom:10px;">Enable notifications on this device for cancellation and seat updates.</p>
+  <div class="row" style="gap:10px; flex-wrap:wrap;">
+    <button class="btn secondary" type="button" id="standbyPushEnableBtn">Enable Notifications</button>
+    <button class="btn secondary" type="button" id="standbyPushDisableBtn">Disable Notifications</button>
+    <span class="badge" id="standbyPushStatus">Push: Unknown</span>
+  </div>
+</div>
+{% endif %}
 <div id="standbyMissingPhoneModal" class="modal" style="display:none;">
   <div class="modal-card">
     <h3>Add Your Cell Number?</h3>
@@ -254,10 +265,13 @@ function skipStandbyPhoneAndContinue() {
   document.getElementById('standbyForm').requestSubmit();
 }
 
-(function() {
+window.addEventListener('load', () => {
   const missingAddBtn = document.getElementById('standbyMissingAddBtn');
   const missingSkipBtn = document.getElementById('standbyMissingSkipBtn');
   const phoneInput = document.getElementById('standbyPhone');
+  const pushEnableBtn = document.getElementById('standbyPushEnableBtn');
+  const pushDisableBtn = document.getElementById('standbyPushDisableBtn');
+  const pushStatus = document.getElementById('standbyPushStatus');
   missingAddBtn && missingAddBtn.addEventListener('click', () => { focusStandbyPhoneField(); });
   missingSkipBtn && missingSkipBtn.addEventListener('click', () => { skipStandbyPhoneAndContinue(); });
   if (phoneInput) {
@@ -265,6 +279,31 @@ function skipStandbyPhoneAndContinue() {
       window._skipStandbyPhonePrompt = false;
     });
   }
-})();
+  async function refreshPushState() {
+    if (!pushStatus || !window.PokerPush) return;
+    const subscribed = await window.PokerPush.isSubscribed().catch(() => false);
+    pushStatus.textContent = subscribed ? 'Push: Enabled' : 'Push: Disabled';
+  }
+  pushEnableBtn && pushEnableBtn.addEventListener('click', async () => {
+    try {
+      await window.PokerPush.subscribe({
+        phone: phoneInput?.value || '',
+        invitee_token: document.getElementById('standbyInviteeToken')?.value || '',
+      });
+      refreshPushState();
+    } catch (e) {
+      if (pushStatus) pushStatus.textContent = e.message || 'Push failed';
+    }
+  });
+  pushDisableBtn && pushDisableBtn.addEventListener('click', async () => {
+    try {
+      await window.PokerPush.unsubscribe();
+      refreshPushState();
+    } catch (e) {
+      if (pushStatus) pushStatus.textContent = e.message || 'Disable failed';
+    }
+  });
+  refreshPushState();
+});
 </script>
 {% endblock %}

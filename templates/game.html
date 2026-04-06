@@ -166,6 +166,18 @@
   <div id="alreadyVotedText">You already responded to this game.</div>
 </div>
 
+{% if web_push_enabled() %}
+<div class="card">
+  <h3 style="margin-top:0;">Browser Notifications</h3>
+  <p style="margin-bottom:10px;">Enable notifications on this device for game cancellation and seat updates.</p>
+  <div class="row" style="gap:10px; flex-wrap:wrap;">
+    <button class="btn secondary" type="button" id="invitePushEnableBtn">Enable Notifications</button>
+    <button class="btn secondary" type="button" id="invitePushDisableBtn">Disable Notifications</button>
+    <span class="badge" id="invitePushStatus">Push: Unknown</span>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <div id="infoPopup" class="info-popup" style="display:none;">
     We can’t read your device phone number from the browser. Please enter it once; it will be remembered on this device.
@@ -252,6 +264,10 @@
   const inListWrap = document.getElementById('inListWrap');
   const outToggleBtn = document.getElementById('outToggleBtn');
   const outListWrap = document.getElementById('outListWrap');
+
+  function updateInviteVerifyBadge() {
+    return;
+  }
 
   if (inToggleBtn && inListWrap) {
     inToggleBtn.addEventListener('click', () => {
@@ -449,7 +465,7 @@ function toggleInfo() {
   el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
 }
 
-(function() {
+window.addEventListener('load', () => {
   const inBtn = document.getElementById('inviteInBtn');
   const outBtn = document.getElementById('inviteOutBtn');
   const lateBtn = document.getElementById('inviteLateBtn');
@@ -458,6 +474,9 @@ function toggleInfo() {
   const lateCancelBtn = document.getElementById('lateCancelBtn');
   const missingAddBtn = document.getElementById('missingPhoneAddBtn');
   const missingSkipBtn = document.getElementById('missingPhoneSkipBtn');
+  const pushEnableBtn = document.getElementById('invitePushEnableBtn');
+  const pushDisableBtn = document.getElementById('invitePushDisableBtn');
+  const pushStatus = document.getElementById('invitePushStatus');
   const phoneInput = document.getElementById('phone');
   inBtn && inBtn.addEventListener('click', () => { submitStatus('IN'); });
   outBtn && outBtn.addEventListener('click', () => { submitStatus('OUT'); });
@@ -472,7 +491,32 @@ function toggleInfo() {
       window._skipPhonePrompt = false;
     });
   }
-})();
+  async function refreshPushState() {
+    if (!pushStatus || !window.PokerPush) return;
+    const subscribed = await window.PokerPush.isSubscribed().catch(() => false);
+    pushStatus.textContent = subscribed ? 'Push: Enabled' : 'Push: Disabled';
+  }
+  pushEnableBtn && pushEnableBtn.addEventListener('click', async () => {
+    try {
+      await window.PokerPush.subscribe({
+        phone: phoneInput?.value || '',
+        invitee_token: document.getElementById('inviteeToken')?.value || '',
+      });
+      refreshPushState();
+    } catch (e) {
+      if (pushStatus) pushStatus.textContent = e.message || 'Push failed';
+    }
+  });
+  pushDisableBtn && pushDisableBtn.addEventListener('click', async () => {
+    try {
+      await window.PokerPush.unsubscribe();
+      refreshPushState();
+    } catch (e) {
+      if (pushStatus) pushStatus.textContent = e.message || 'Disable failed';
+    }
+  });
+  refreshPushState();
+});
 
 (function() {
   function scrollIfLandscape() {

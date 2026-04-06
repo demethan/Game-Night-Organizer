@@ -22,14 +22,17 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
+from py_vapid import Vapid01, sign as vapid_sign, b64urlencode as vapid_b64urlencode
+from pywebpush import webpush, WebPushException
 import qrcode
 from qrcode.image.svg import SvgPathImage
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from cryptography.hazmat.primitives import serialization
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "poker.db"
@@ -78,6 +81,24 @@ def public_base_url(request: Request) -> str:
     if not host:
         host = "localhost"
     return f"{scheme}://{host}"
+
+
+def configured_public_base_url() -> str:
+    configured = (os.getenv("APP_BASE_URL") or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    return "http://127.0.0.1:8000"
+
+
+def web_push_enabled() -> bool:
+    return bool(
+        (os.getenv("WEB_PUSH_VAPID_PUBLIC_KEY") or "").strip()
+        and (
+            (os.getenv("WEB_PUSH_VAPID_PRIVATE_KEY") or "").strip()
+            or (os.getenv("WEB_PUSH_VAPID_PRIVATE_KEY_PATH") or "").strip()
+        )
+        and (os.getenv("WEB_PUSH_SUBJECT") or "").strip()
+    )
 
 # Python 3.8 environment: implement America/Thunder_Bay (EST/EDT) without zoneinfo.
 def _thunder_bay_dst_bounds(year: int):
@@ -164,6 +185,7 @@ templates.env.filters["fmt_game_time"] = format_game_time
 templates.env.filters["fmt_phone"] = format_phone
 templates.env.globals["csp_nonce"] = get_request_csp_nonce
 templates.env.globals["public_base_url"] = public_base_url
+templates.env.globals["web_push_enabled"] = web_push_enabled
 
 
 def static_asset(path: str) -> str:
@@ -664,6 +686,30 @@ def init_db():
         """
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_hits_endpoint_ip_created ON rate_limit_hits(endpoint, ip, created_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS web_push_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            phone TEXT,
+            invitee_token_hash TEXT,
+            endpoint TEXT NOT NULL UNIQUE,
+            p256dh TEXT NOT NULL,
+            auth TEXT NOT NULL,
+            user_agent TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_success_at TEXT,
+            last_error_at TEXT,
+            last_error_detail TEXT,
+            disabled_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_user ON web_push_subscriptions(user_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_phone ON web_push_subscriptions(phone)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_token ON web_push_subscriptions(invitee_token_hash)")
     cur.execute("SELECT id FROM games WHERE host_code IS NULL OR host_code = ''")
     for row in cur.fetchall():
         cur.execute("UPDATE games SET host_code = ? WHERE id = ?", (generate_host_code(conn), row["id"]))
@@ -1371,6 +1417,234 @@ def ensure_invitee_token_for_phone(conn: sqlite3.Connection, phone_10: str, pref
     return fresh
 
 
+def web_push_rows_for_user(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM web_push_subscriptions
+        WHERE user_id = ?
+          AND disabled_at IS NULL
+        ORDER BY id ASC
+        """,
+        (int(user_id),),
+    )
+    return cur.fetchall()
+
+
+def web_push_rows_for_phones(conn: sqlite3.Connection, phones: list[str]) -> list[sqlite3.Row]:
+    cleaned = sorted({str(v or "").strip() for v in phones if str(v or "").strip()})
+    if not cleaned:
+        return []
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT *
+        FROM web_push_subscriptions
+        WHERE phone IN ({",".join("?" for _ in cleaned)})
+          AND disabled_at IS NULL
+        ORDER BY id ASC
+        """,
+        cleaned,
+    )
+    return cur.fetchall()
+
+
+def upsert_web_push_subscription(
+    conn: sqlite3.Connection,
+    endpoint: str,
+    p256dh: str,
+    auth: str,
+    user_id: Optional[int],
+    phone_10: Optional[str],
+    invitee_token: Optional[str],
+    user_agent: Optional[str],
+) -> None:
+    now = _utc_now_iso()
+    cur = conn.cursor()
+    token_hash = invitee_token_hash(invitee_token) if normalize_invitee_token(invitee_token) else None
+    cur.execute(
+        """
+        INSERT INTO web_push_subscriptions (
+            user_id, phone, invitee_token_hash, endpoint, p256dh, auth, user_agent,
+            created_at, updated_at, disabled_at, last_error_at, last_error_detail
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+        ON CONFLICT(endpoint) DO UPDATE SET
+            user_id = excluded.user_id,
+            phone = excluded.phone,
+            invitee_token_hash = excluded.invitee_token_hash,
+            p256dh = excluded.p256dh,
+            auth = excluded.auth,
+            user_agent = excluded.user_agent,
+            updated_at = excluded.updated_at,
+            disabled_at = NULL,
+            last_error_at = NULL,
+            last_error_detail = NULL
+        """,
+        (user_id, phone_10, token_hash, endpoint, p256dh, auth, user_agent, now, now),
+    )
+
+
+def disable_web_push_subscription(conn: sqlite3.Connection, endpoint: str, detail: Optional[str] = None) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE web_push_subscriptions
+        SET disabled_at = ?, updated_at = ?, last_error_at = ?, last_error_detail = ?
+        WHERE endpoint = ?
+        """,
+        (_utc_now_iso(), _utc_now_iso(), _utc_now_iso(), (detail or "")[:500], endpoint),
+    )
+
+
+def build_apple_vapid_headers(endpoint: str, vapid_private_key: str, vapid_subject: str) -> dict[str, str]:
+    parsed = urllib.parse.urlparse(endpoint)
+    aud = f"{parsed.scheme}://{parsed.netloc}"
+    claims = {"sub": vapid_subject, "aud": aud, "exp": int(time.time()) + 3600}
+    if os.path.isfile(vapid_private_key):
+        vapid = Vapid01.from_file(private_key_file=vapid_private_key)
+    else:
+        vapid = Vapid01.from_string(private_key=vapid_private_key)
+    token = vapid_sign(vapid._base_sign(claims), vapid.private_key).strip("=")
+    public_key = vapid.public_key.public_bytes(
+        encoding=serialization.Encoding.X962,
+        format=serialization.PublicFormat.UncompressedPoint,
+    )
+    public_key_b64 = vapid_b64urlencode(public_key)
+    return {"Authorization": f"vapid t={token}, k={public_key_b64}"}
+
+
+def send_web_push_rows(conn: sqlite3.Connection, rows: list[sqlite3.Row], title: str, body: str, url: str) -> int:
+    if not web_push_enabled():
+        return 0
+    vapid_subject = (os.getenv("WEB_PUSH_SUBJECT") or "").strip()
+    vapid_claims = {"sub": vapid_subject}
+    vapid_private_key = (os.getenv("WEB_PUSH_VAPID_PRIVATE_KEY_PATH") or "").strip() or (os.getenv("WEB_PUSH_VAPID_PRIVATE_KEY") or "").strip()
+    payload = json.dumps({"title": title, "body": body, "url": url})
+    sent = 0
+    cur = conn.cursor()
+    for row in rows:
+        endpoint = (row["endpoint"] or "").strip()
+        if not endpoint:
+            continue
+        subscription_info = {
+            "endpoint": endpoint,
+            "keys": {
+                "p256dh": row["p256dh"],
+                "auth": row["auth"],
+            },
+        }
+        try:
+            if endpoint.startswith("https://web.push.apple.com/"):
+                webpush(
+                    subscription_info=subscription_info,
+                    data=payload,
+                    headers=build_apple_vapid_headers(endpoint, vapid_private_key, vapid_subject),
+                    ttl=600,
+                )
+            else:
+                webpush(
+                    subscription_info=subscription_info,
+                    data=payload,
+                    vapid_private_key=vapid_private_key,
+                    vapid_claims=vapid_claims,
+                    ttl=600,
+                )
+            cur.execute(
+                """
+                UPDATE web_push_subscriptions
+                SET updated_at = ?, last_success_at = ?, last_error_at = NULL, last_error_detail = NULL
+                WHERE id = ?
+                """,
+                (_utc_now_iso(), _utc_now_iso(), int(row["id"])),
+            )
+            sent += 1
+        except WebPushException as exc:
+            status_code = None
+            if getattr(exc, "response", None) is not None:
+                status_code = getattr(exc.response, "status_code", None)
+            detail = str(exc)
+            if status_code in {404, 410}:
+                disable_web_push_subscription(conn, endpoint, detail)
+            else:
+                cur.execute(
+                    """
+                    UPDATE web_push_subscriptions
+                    SET updated_at = ?, last_error_at = ?, last_error_detail = ?
+                    WHERE id = ?
+                    """,
+                    (_utc_now_iso(), _utc_now_iso(), detail[:500], int(row["id"])),
+                )
+    return sent
+
+
+def notify_game_cancelled_push(conn: sqlite3.Connection, game_row) -> int:
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM rsvps WHERE game_id = ? AND status = 'HOST' ORDER BY created_at ASC LIMIT 1", (int(game_row["id"]),))
+    host_row = cur.fetchone()
+    host_name = (host_row["name"] if host_row and host_row["name"] else "Organizer")
+    cur.execute(
+        """
+        SELECT phone FROM rsvps WHERE game_id = ? AND phone IS NOT NULL AND TRIM(phone) != ''
+        UNION
+        SELECT phone FROM standby WHERE game_id = ? AND phone IS NOT NULL AND TRIM(phone) != ''
+        """,
+        (int(game_row["id"]), int(game_row["id"])),
+    )
+    phones = [str(row["phone"] or "").strip() for row in cur.fetchall()]
+    rows = web_push_rows_for_user(conn, int(game_row["organizer_id"])) + web_push_rows_for_phones(conn, phones)
+    unique_rows = {int(row["id"]): row for row in rows}.values()
+    return send_web_push_rows(
+        conn,
+        list(unique_rows),
+        "Game cancelled",
+        f"{host_name}'s game was cancelled.",
+        f"{configured_public_base_url()}/g/{game_row['code']}",
+    )
+
+
+def seat_map_for_game(conn: sqlite3.Connection, game_id: int, total_players: int, multiple_tables: bool) -> dict[int, tuple[str, str]]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, name, phone, seat_number
+        FROM rsvps
+        WHERE game_id = ?
+          AND status IN ('HOST', 'IN', 'LATE')
+          AND seat_number IS NOT NULL
+        """,
+        (int(game_id),),
+    )
+    out = {}
+    for row in cur.fetchall():
+        out[int(row["id"])] = (
+            str(row["phone"] or "").strip(),
+            seat_display(row["seat_number"], total_players, multiple_tables) or "",
+        )
+    return out
+
+
+def notify_changed_seats_push(conn: sqlite3.Connection, game_row, previous_map: dict[int, tuple[str, str]]) -> int:
+    current_map = seat_map_for_game(conn, int(game_row["id"]), int(game_row["total_players"]), game_uses_multiple_tables(game_row))
+    sent = 0
+    for rsvp_id, (phone, seat_label) in current_map.items():
+        if not phone or not seat_label:
+            continue
+        if previous_map.get(rsvp_id) == (phone, seat_label):
+            continue
+        rows = web_push_rows_for_phones(conn, [phone])
+        if not rows:
+            continue
+        sent += send_web_push_rows(
+            conn,
+            rows,
+            "Seat assigned",
+            f"Your seat is {seat_label} for {game_row['title']}.",
+            f"{configured_public_base_url()}/g/{game_row['code']}",
+        )
+    return sent
+
+
 def upsert_invitee_profiles(conn: sqlite3.Connection, organizer_id: int, phone_10: Optional[str], name: Optional[str]) -> None:
     phone = (phone_10 or "").strip()
     display_name = (name or "").strip()
@@ -1616,6 +1890,362 @@ def invitee_roster_payload(conn: sqlite3.Connection, game_row) -> list:
             }
         )
     return rows
+
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    user_id = current_user_id(request)
+    if user_id:
+        return RedirectResponse(url="/dashboard", status_code=302)
+    return RedirectResponse(url="/login", status_code=302)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/push/public-key")
+def push_public_key():
+    return JSONResponse(
+        {
+            "enabled": web_push_enabled(),
+            "public_key": (os.getenv("WEB_PUSH_VAPID_PUBLIC_KEY") or "").strip(),
+        }
+    )
+
+
+@app.post("/push/subscribe")
+async def push_subscribe(request: Request):
+    token = (request.headers.get("X-CSRF-Token") or "").strip()
+    if not verify_signed_csrf_token(token):
+        return JSONResponse({"ok": False, "error": "Bad CSRF token"}, status_code=400)
+    if not web_push_enabled():
+        return JSONResponse({"ok": False, "error": "Push is not configured"}, status_code=503)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+    subscription = payload.get("subscription") or {}
+    keys = subscription.get("keys") or {}
+    endpoint = str(subscription.get("endpoint") or "").strip()
+    p256dh = str(keys.get("p256dh") or "").strip()
+    auth = str(keys.get("auth") or "").strip()
+    if not endpoint or not p256dh or not auth:
+        return JSONResponse({"ok": False, "error": "Invalid subscription"}, status_code=400)
+    invitee_token = normalize_invitee_token(payload.get("invitee_token"))
+    phone_10 = None
+    try:
+        phone_10 = normalize_phone_10(payload.get("phone"))
+    except ValueError:
+        phone_10 = None
+    conn = get_db()
+    try:
+        if not phone_10 and invitee_token:
+            phone_10 = lookup_phone_by_invitee_token(conn, invitee_token)
+        upsert_web_push_subscription(
+            conn,
+            endpoint=endpoint,
+            p256dh=p256dh,
+            auth=auth,
+            user_id=current_user_id(request),
+            phone_10=phone_10,
+            invitee_token=invitee_token,
+            user_agent=request.headers.get("user-agent"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/push/unsubscribe")
+async def push_unsubscribe(request: Request):
+    token = (request.headers.get("X-CSRF-Token") or "").strip()
+    if not verify_signed_csrf_token(token):
+        return JSONResponse({"ok": False, "error": "Bad CSRF token"}, status_code=400)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+    endpoint = str((payload.get("subscription") or {}).get("endpoint") or payload.get("endpoint") or "").strip()
+    if not endpoint:
+        return JSONResponse({"ok": False, "error": "Missing endpoint"}, status_code=400)
+    conn = get_db()
+    try:
+        disable_web_push_subscription(conn, endpoint, "user unsubscribed")
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/push/test")
+def push_test(request: Request):
+    user_id = require_login(request)
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    token = (request.headers.get("X-CSRF-Token") or "").strip()
+    if not verify_signed_csrf_token(token):
+        return JSONResponse({"ok": False, "error": "Bad CSRF token"}, status_code=400)
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM users WHERE id = ?", (int(user_id),))
+        row = cur.fetchone()
+        display_name = (row["name"] if row and row["name"] else "Organizer")
+        sent = send_web_push_rows(
+            conn,
+            web_push_rows_for_user(conn, int(user_id)),
+            "Push is working",
+            f"Browser notifications are enabled for {display_name}.",
+            f"{configured_public_base_url()}/dashboard",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True, "sent": sent})
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return RedirectResponse(url="/static/favicon-app-32.png", status_code=302)
+
+
+@app.get("/push-sw.js")
+def push_service_worker():
+    return FileResponse(
+        BASE_DIR / "static" / "push-sw-v2.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
+@app.head("/push-sw.js")
+def push_service_worker_head():
+    return PlainTextResponse(
+        "",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
+@app.get("/push-sw-v2.js")
+def push_service_worker_v2():
+    return FileResponse(
+        BASE_DIR / "static" / "push-sw-v2.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
+@app.head("/push-sw-v2.js")
+def push_service_worker_v2_head():
+    return PlainTextResponse(
+        "",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    return RedirectResponse(url="/static/apple-touch-icon-app.png", status_code=302)
+
+
+@app.get("/apple-touch-icon-precomposed.png")
+def apple_touch_icon_precomposed():
+    return RedirectResponse(url="/static/apple-touch-icon-app.png", status_code=302)
+
+
+@app.get("/2436e4e916bd7e6bcd16ae6a02c01433.html")
+def twilio_domain_verification():
+    return PlainTextResponse(
+        "twilio-domain-verification=2436e4e916bd7e6bcd16ae6a02c01433",
+        media_type="text/plain",
+    )
+
+
+@app.get("/register", response_class=HTMLResponse)
+def register_form(request: Request):
+    return templates.TemplateResponse("register.html", {"request": request, "error": None})
+
+
+@app.post("/register", response_class=HTMLResponse)
+def register(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    name: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    if len(password) < 8 or len(password) > 128:
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": "Password must be at least 8 characters."},
+            status_code=400,
+        )
+    try:
+        cleaned_name = clean_text(name, 50)
+        cleaned_email = clean_text(email.lower().strip(), 254)
+    except ValueError:
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": "Invalid name or email."},
+            status_code=400,
+        )
+
+    password_hash = pwd_context.hash(password)
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO users (email, password_hash, name, created_at, is_admin, is_disabled) VALUES (?, ?, ?, ?, 0, 0)",
+            (cleaned_email, password_hash, cleaned_name, datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": "Email already registered."},
+            status_code=400,
+        )
+    conn.close()
+    return RedirectResponse(url="/login", status_code=302)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+
+@app.post("/login", response_class=HTMLResponse)
+def login(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    conn = get_db()
+    cur = conn.cursor()
+    identifier = email.strip()
+    cur.execute(
+        """
+        SELECT id, password_hash, is_admin, is_disabled, name, mfa_enabled, totp_secret, totp_enabled
+        FROM users
+        WHERE email = ? OR username = ?
+        """,
+        (identifier.lower(), identifier),
+    )
+    row = cur.fetchone()
+    if not row or not pwd_context.verify(password, row["password_hash"]):
+        conn.close()
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Invalid email or password."},
+            status_code=401,
+        )
+    if row["is_disabled"]:
+        conn.close()
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Account disabled. Contact admin."},
+            status_code=403,
+        )
+    if int(row["mfa_enabled"] or 0) == 1:
+        has_totp = int(row["totp_enabled"] or 0) == 1 and bool((row["totp_secret"] or "").strip())
+        if not has_totp:
+            conn.close()
+            return templates.TemplateResponse(
+                "login.html",
+                {"request": request, "error": "MFA is enabled but no authenticator app is configured."},
+                status_code=403,
+            )
+        if has_valid_trusted_device(conn, request, int(row["id"])):
+            conn.commit()
+            conn.close()
+            complete_login_session(request, row)
+            return RedirectResponse(url="/dashboard", status_code=302)
+        request.session["pending_mfa_user_id"] = int(row["id"])
+        request.session["pending_mfa_name"] = row["name"]
+        request.session["pending_mfa_method"] = "totp"
+        conn.commit()
+        conn.close()
+        return RedirectResponse(url="/mfa", status_code=302)
+    conn.close()
+    complete_login_session(request, row)
+    return RedirectResponse(url="/dashboard", status_code=302)
+
+
+@app.get("/mfa", response_class=HTMLResponse)
+def mfa_form(request: Request):
+    if request.session.get("user_id"):
+        return RedirectResponse(url="/dashboard", status_code=302)
+    pending_user_id = request.session.get("pending_mfa_user_id")
+    if not pending_user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse(
+        "mfa.html",
+        {
+            "request": request,
+            "error": None,
+            "success": None,
+            "mfa_method": "totp",
+            "pending_name": request.session.get("pending_mfa_name") or "Organizer",
+        },
+    )
+
+
+@app.post("/mfa", response_class=HTMLResponse)
+def mfa_verify(request: Request, code: str = Form(...), trust_device: str = Form(None), csrf_token: str = Form(...)):
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    pending_user_id = request.session.get("pending_mfa_user_id")
+    if not pending_user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, is_admin, name, totp_secret, totp_enabled FROM users WHERE id = ?", (int(pending_user_id),))
+    row = cur.fetchone()
+    verified = bool(row and int(row["totp_enabled"] or 0) == 1 and row["totp_secret"] and verify_totp_code(row["totp_secret"], code))
+    if not verified:
+        conn.commit()
+        conn.close()
+        return templates.TemplateResponse(
+            "mfa.html",
+            {
+                "request": request,
+                "error": "Invalid or expired MFA code.",
+                "success": None,
+                "mfa_method": "totp",
+                "pending_name": request.session.get("pending_mfa_name") or "Organizer",
+            },
+            status_code=400,
+        )
+    conn.commit()
+    trusted_token = None
+    if row and str(trust_device or "").strip() in {"1", "true", "on", "yes"}:
+        trusted_token = create_trusted_device(conn, request, int(row["id"]))
+        conn.commit()
+    conn.close()
+    complete_login_session(request, row)
+    response = RedirectResponse(url="/dashboard", status_code=302)
+    if trusted_token:
+        response.set_cookie(
+            TRUSTED_DEVICE_COOKIE,
+            trusted_token,
+            max_age=TRUSTED_DEVICE_DAYS * 24 * 60 * 60,
+            httponly=True,
+            secure=os.getenv("SESSION_SECURE", "true").lower() == "true",
+            samesite="lax",
+            path="/",
+        )
+    return response
 
 
 @app.get("/logout")
@@ -2696,6 +3326,9 @@ def cancel_game(request: Request, game_id: int, csrf_token: str = Form(...)):
             """,
             (datetime.utcnow().isoformat(), game_id),
         )
+        cur.execute("SELECT * FROM games WHERE id = ?", (game_id,))
+        updated_game = cur.fetchone() or game
+        notify_game_cancelled_push(conn, updated_game)
         conn.commit()
         message = "Game%20cancelled"
     else:
@@ -2729,8 +3362,12 @@ def assign_game_seats_now(request: Request, game_id: int, csrf_token: str = Form
         return RedirectResponse(url="/dashboard", status_code=302)
 
     cur = conn.cursor()
+    previous_seats = seat_map_for_game(conn, int(game_id), int(game["total_players"]), game_uses_multiple_tables(game))
     cur.execute("UPDATE games SET manual_seat_assignment = 1 WHERE id = ?", (game_id,))
     assign_seats_if_ready(conn, game_id, int(game["total_players"]))
+    cur.execute("SELECT * FROM games WHERE id = ?", (game_id,))
+    updated_game = cur.fetchone() or game
+    notify_changed_seats_push(conn, updated_game, previous_seats)
     conn.commit()
     conn.close()
     return RedirectResponse(url=f"/games/{game_id}?success=Seats%20assigned", status_code=302)

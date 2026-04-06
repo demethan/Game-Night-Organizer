@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title if title else "Poker Invite Manager" }}</title>
+  <meta name="csrf-token" content="{{ csrf_token(request) }}">
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-app-32.png">
   <link rel="icon" type="image/svg+xml" href="/static/favicon-app.svg">
   <link rel="alternate icon" href="/static/favicon-app.svg">
@@ -35,5 +36,90 @@
       {% block content %}{% endblock %}
     </main>
   </div>
+  <script nonce="{{ csp_nonce(request) }}">
+    window.PokerPush = (function() {
+      let cachedKey = null;
+      function csrfToken() {
+        return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      }
+      function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = atob(base64);
+        return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+      }
+      async function publicKey() {
+        if (cachedKey !== null) return cachedKey;
+        const res = await fetch('/push/public-key', { headers: { Accept: 'application/json' } });
+        if (!res.ok) return null;
+        const data = await res.json();
+        cachedKey = data && data.enabled && data.public_key ? data.public_key : null;
+        return cachedKey;
+      }
+      async function serviceWorkerRegistration() {
+        if (!('serviceWorker' in navigator)) return null;
+        let reg = await navigator.serviceWorker.getRegistration('/');
+        if (!reg) reg = await navigator.serviceWorker.register('/push-sw-v2.js', { scope: '/' });
+        return reg;
+      }
+      async function subscribe(context) {
+        const key = await publicKey();
+        if (!key || !('PushManager' in window) || !('Notification' in window)) {
+          throw new Error('Push notifications are not available on this browser.');
+        }
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          throw new Error('Notification permission was not granted.');
+        }
+        const reg = await serviceWorkerRegistration();
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(key),
+        });
+        const res = await fetch('/push/subscribe', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': csrfToken(),
+          },
+          body: JSON.stringify({ subscription: sub.toJSON(), ...(context || {}) }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Could not save subscription.');
+        return true;
+      }
+      async function unsubscribe() {
+        const reg = await serviceWorkerRegistration();
+        const sub = reg ? await reg.pushManager.getSubscription() : null;
+        if (!sub) return true;
+        await fetch('/push/unsubscribe', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': csrfToken(),
+          },
+          body: JSON.stringify({ subscription: sub.toJSON() }),
+        });
+        await sub.unsubscribe();
+        return true;
+      }
+      async function sendTest() {
+        const res = await fetch('/push/test', {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': csrfToken() },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Test failed.');
+        return data;
+      }
+      async function isSubscribed() {
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+        const reg = await serviceWorkerRegistration();
+        const sub = reg ? await reg.pushManager.getSubscription() : null;
+        return !!sub;
+      }
+      return { publicKey, subscribe, unsubscribe, sendTest, isSubscribed };
+    })();
+  </script>
 </body>
 </html>
