@@ -128,6 +128,9 @@ window.addEventListener('load', () => {
   }
   enableBtn.addEventListener('click', async () => {
     try {
+      if (window.PokerPush.isiPhoneSafari()) {
+        alert(window.PokerPush.iphoneInstructions());
+      }
       await window.PokerPush.subscribe({});
       setStatus('Push: Enabled');
     } catch (e) {

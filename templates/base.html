@@ -39,6 +39,18 @@
   <script nonce="{{ csp_nonce(request) }}">
     window.PokerPush = (function() {
       let cachedKey = null;
+      function isiPhoneSafari() {
+        const ua = navigator.userAgent || '';
+        const isIPhone = /iPhone/i.test(ua);
+        const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS/i.test(ua);
+        return isIPhone && isSafari;
+      }
+      function isStandaloneMode() {
+        return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+      }
+      function iphoneInstructions() {
+        return 'iPhone setup: open this site in Safari, use Share > Add to Home Screen, open the Home Screen icon, then enable notifications there.';
+      }
       function csrfToken() {
         return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
       }
@@ -66,6 +78,9 @@
         const key = await publicKey();
         if (!key || !('PushManager' in window) || !('Notification' in window)) {
           throw new Error('Push notifications are not available on this browser.');
+        }
+        if (isiPhoneSafari() && !isStandaloneMode()) {
+          throw new Error(iphoneInstructions());
         }
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') {
@@ -112,13 +127,29 @@
         if (!res.ok || !data.ok) throw new Error(data.error || 'Test failed.');
         return data;
       }
+      async function sendDeviceTest() {
+        const reg = await serviceWorkerRegistration();
+        const sub = reg ? await reg.pushManager.getSubscription() : null;
+        if (!sub) throw new Error('Enable notifications first.');
+        const res = await fetch('/push/test-device', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': csrfToken(),
+          },
+          body: JSON.stringify({ subscription: sub.toJSON() }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Test failed.');
+        return data;
+      }
       async function isSubscribed() {
         if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
         const reg = await serviceWorkerRegistration();
         const sub = reg ? await reg.pushManager.getSubscription() : null;
         return !!sub;
       }
-      return { publicKey, subscribe, unsubscribe, sendTest, isSubscribed };
+      return { publicKey, subscribe, unsubscribe, sendTest, sendDeviceTest, isSubscribed, isiPhoneSafari, isStandaloneMode, iphoneInstructions };
     })();
   </script>
 </body>

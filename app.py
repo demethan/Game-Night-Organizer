@@ -1450,6 +1450,49 @@ def web_push_rows_for_phones(conn: sqlite3.Connection, phones: list[str]) -> lis
     return cur.fetchall()
 
 
+def web_push_rows_for_invitee_phones(conn: sqlite3.Connection, phones: list[str]) -> list[sqlite3.Row]:
+    cleaned = sorted({str(v or "").strip() for v in phones if str(v or "").strip()})
+    if not cleaned:
+        return []
+    cur = conn.cursor()
+    rows = []
+    seen_ids = set()
+
+    for row in web_push_rows_for_phones(conn, cleaned):
+        row_id = int(row["id"])
+        if row_id not in seen_ids:
+            rows.append(row)
+            seen_ids.add(row_id)
+
+    cur.execute(
+        f"""
+        SELECT DISTINCT token_hash
+        FROM invitee_browser_tokens
+        WHERE phone IN ({",".join("?" for _ in cleaned)})
+        """,
+        cleaned,
+    )
+    token_hashes = [str(row["token_hash"] or "").strip() for row in cur.fetchall() if (row["token_hash"] or "").strip()]
+    if not token_hashes:
+        return rows
+    cur.execute(
+        f"""
+        SELECT *
+        FROM web_push_subscriptions
+        WHERE invitee_token_hash IN ({",".join("?" for _ in token_hashes)})
+          AND disabled_at IS NULL
+        ORDER BY id ASC
+        """,
+        token_hashes,
+    )
+    for row in cur.fetchall():
+        row_id = int(row["id"])
+        if row_id not in seen_ids:
+            rows.append(row)
+            seen_ids.add(row_id)
+    return rows
+
+
 def upsert_web_push_subscription(
     conn: sqlite3.Connection,
     endpoint: str,
@@ -1592,7 +1635,7 @@ def notify_game_cancelled_push(conn: sqlite3.Connection, game_row) -> int:
         (int(game_row["id"]), int(game_row["id"])),
     )
     phones = [str(row["phone"] or "").strip() for row in cur.fetchall()]
-    rows = web_push_rows_for_user(conn, int(game_row["organizer_id"])) + web_push_rows_for_phones(conn, phones)
+    rows = web_push_rows_for_user(conn, int(game_row["organizer_id"])) + web_push_rows_for_invitee_phones(conn, phones)
     unique_rows = {int(row["id"]): row for row in rows}.values()
     return send_web_push_rows(
         conn,
@@ -1603,7 +1646,52 @@ def notify_game_cancelled_push(conn: sqlite3.Connection, game_row) -> int:
     )
 
 
-def seat_map_for_game(conn: sqlite3.Connection, game_id: int, total_players: int, multiple_tables: bool) -> dict[int, tuple[str, str]]:
+def organizer_push_rows_for_game(conn: sqlite3.Connection, game_row, phones: Optional[list[str]] = None) -> list[sqlite3.Row]:
+    rows = web_push_rows_for_user(conn, int(game_row["organizer_id"]))
+    if phones:
+        rows += web_push_rows_for_invitee_phones(conn, phones)
+    return list({int(row["id"]): row for row in rows}.values())
+
+
+def notify_rsvp_status_push(conn: sqlite3.Connection, game_row, actor_name: str, status: str, late_eta: Optional[str] = None) -> int:
+    status_label = (status or "").upper().strip()
+    if status_label == "LATE" and late_eta:
+        body = f"{actor_name} is LATE ({late_eta}) for {game_row['title']}."
+    else:
+        body = f"{actor_name} is {status_label} for {game_row['title']}."
+    return send_web_push_rows(
+        conn,
+        organizer_push_rows_for_game(conn, game_row),
+        "RSVP update",
+        body,
+        f"{configured_public_base_url()}/games/{game_row['id']}",
+    )
+
+
+def notify_game_full_push(conn: sqlite3.Connection, game_row) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT phone
+        FROM rsvps
+        WHERE game_id = ?
+          AND status IN ('HOST', 'IN', 'LATE')
+          AND phone IS NOT NULL
+          AND TRIM(phone) != ''
+        """,
+        (int(game_row["id"]),),
+    )
+    phones = [str(row["phone"] or "").strip() for row in cur.fetchall()]
+    return send_web_push_rows(
+        conn,
+        organizer_push_rows_for_game(conn, game_row, phones),
+        "Game is full",
+        f"{game_row['title']} is now full.",
+        f"{configured_public_base_url()}/g/{game_row['code']}",
+    )
+
+
+def seat_map_for_game(conn: sqlite3.Connection, game_id: int, total_players: int, multiple_tables: bool) -> dict[int, tuple[str, str, str]]:
     cur = conn.cursor()
     cur.execute(
         """
@@ -1618,30 +1706,40 @@ def seat_map_for_game(conn: sqlite3.Connection, game_id: int, total_players: int
     out = {}
     for row in cur.fetchall():
         out[int(row["id"])] = (
+            str(row["name"] or "").strip(),
             str(row["phone"] or "").strip(),
             seat_display(row["seat_number"], total_players, multiple_tables) or "",
         )
     return out
 
 
-def notify_changed_seats_push(conn: sqlite3.Connection, game_row, previous_map: dict[int, tuple[str, str]]) -> int:
+def notify_changed_seats_push(conn: sqlite3.Connection, game_row, previous_map: dict[int, tuple[str, str, str]]) -> int:
     current_map = seat_map_for_game(conn, int(game_row["id"]), int(game_row["total_players"]), game_uses_multiple_tables(game_row))
     sent = 0
-    for rsvp_id, (phone, seat_label) in current_map.items():
-        if not phone or not seat_label:
+    organizer_rows = organizer_push_rows_for_game(conn, game_row)
+    for rsvp_id, (name, phone, seat_label) in current_map.items():
+        if not seat_label:
             continue
-        if previous_map.get(rsvp_id) == (phone, seat_label):
+        if previous_map.get(rsvp_id) == (name, phone, seat_label):
             continue
-        rows = web_push_rows_for_phones(conn, [phone])
-        if not rows:
-            continue
-        sent += send_web_push_rows(
-            conn,
-            rows,
-            "Seat assigned",
-            f"Your seat is {seat_label} for {game_row['title']}.",
-            f"{configured_public_base_url()}/g/{game_row['code']}",
-        )
+        if phone:
+            player_rows = web_push_rows_for_invitee_phones(conn, [phone])
+            if player_rows:
+                sent += send_web_push_rows(
+                    conn,
+                    player_rows,
+                    "Seat assigned",
+                    f"Your seat is {seat_label} for {game_row['title']}.",
+                    f"{configured_public_base_url()}/g/{game_row['code']}",
+                )
+        if organizer_rows:
+            sent += send_web_push_rows(
+                conn,
+                organizer_rows,
+                "Seat assigned",
+                f"{name or 'Player'} seat is {seat_label} for {game_row['title']}.",
+                f"{configured_public_base_url()}/games/{game_row['id']}",
+            )
     return sent
 
 
@@ -1757,6 +1855,15 @@ def game_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
     cur = conn.cursor()
     cur.execute("SELECT * FROM rsvps WHERE game_id = ? ORDER BY created_at ASC", (game_id,))
     rsvp_rows = cur.fetchall()
+    push_enabled_phones = set()
+    for row in rsvp_rows:
+        phone = str(row["phone"] or "").strip()
+        if not phone:
+            continue
+        if web_push_rows_for_invitee_phones(conn, [phone]):
+            push_enabled_phones.add(phone)
+    cur.execute("SELECT 1 FROM web_push_subscriptions WHERE disabled_at IS NULL AND user_id = ? LIMIT 1", (int(game_row["organizer_id"]),))
+    organizer_push_enabled = cur.fetchone() is not None
     rsvps = []
     for row in rsvp_rows:
         rsvps.append(
@@ -1771,6 +1878,10 @@ def game_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
                 "created_at_fmt": format_ts(row["created_at"]),
                 "seat_number": row["seat_number"],
                 "seat_label": seat_display(row["seat_number"], game_row["total_players"], game_uses_multiple_tables(game_row)) or "-",
+                "push_enabled": bool(
+                    str(row["phone"] or "").strip() in push_enabled_phones
+                    or (str(row["status"] or "").upper() == "HOST" and organizer_push_enabled)
+                ),
             }
         )
     payload = {
@@ -1935,6 +2046,7 @@ async def push_subscribe(request: Request):
         return JSONResponse({"ok": False, "error": "Invalid subscription"}, status_code=400)
     invitee_token = normalize_invitee_token(payload.get("invitee_token"))
     phone_10 = None
+    user_id = current_user_id(request)
     try:
         phone_10 = normalize_phone_10(payload.get("phone"))
     except ValueError:
@@ -1943,12 +2055,21 @@ async def push_subscribe(request: Request):
     try:
         if not phone_10 and invitee_token:
             phone_10 = lookup_phone_by_invitee_token(conn, invitee_token)
+        if not phone_10 and user_id:
+            cur = conn.cursor()
+            cur.execute("SELECT phone FROM users WHERE id = ?", (int(user_id),))
+            user_row = cur.fetchone()
+            if user_row:
+                try:
+                    phone_10 = normalize_phone_10(user_row["phone"])
+                except ValueError:
+                    phone_10 = None
         upsert_web_push_subscription(
             conn,
             endpoint=endpoint,
             p256dh=p256dh,
             auth=auth,
-            user_id=current_user_id(request),
+            user_id=user_id,
             phone_10=phone_10,
             invitee_token=invitee_token,
             user_agent=request.headers.get("user-agent"),
@@ -2000,6 +2121,38 @@ def push_test(request: Request):
             "Push is working",
             f"Browser notifications are enabled for {display_name}.",
             f"{configured_public_base_url()}/dashboard",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True, "sent": sent})
+
+
+@app.post("/push/test-device")
+async def push_test_device(request: Request):
+    token = (request.headers.get("X-CSRF-Token") or "").strip()
+    if not verify_signed_csrf_token(token):
+        return JSONResponse({"ok": False, "error": "Bad CSRF token"}, status_code=400)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+    endpoint = str((payload.get("subscription") or {}).get("endpoint") or payload.get("endpoint") or "").strip()
+    if not endpoint:
+        return JSONResponse({"ok": False, "error": "Missing endpoint"}, status_code=400)
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM web_push_subscriptions WHERE endpoint = ? AND disabled_at IS NULL LIMIT 1", (endpoint,))
+        row = cur.fetchone()
+        if not row:
+            return JSONResponse({"ok": False, "error": "This device is not subscribed yet."}, status_code=404)
+        sent = send_web_push_rows(
+            conn,
+            [row],
+            "Push is working",
+            "Browser notifications are enabled on this device.",
+            configured_public_base_url(),
         )
         conn.commit()
     finally:
@@ -3155,10 +3308,23 @@ def view_game(request: Request, game_id: int):
 
     cur.execute("SELECT * FROM rsvps WHERE game_id = ? ORDER BY created_at ASC", (game_id,))
     rsvp_rows = cur.fetchall()
+    push_enabled_phones = set()
+    for row in rsvp_rows:
+        phone = str(row["phone"] or "").strip()
+        if not phone:
+            continue
+        if web_push_rows_for_invitee_phones(conn, [phone]):
+            push_enabled_phones.add(phone)
+    cur.execute("SELECT 1 FROM web_push_subscriptions WHERE disabled_at IS NULL AND user_id = ? LIMIT 1", (int(game["organizer_id"]),))
+    organizer_push_enabled = cur.fetchone() is not None
     rsvps = []
     for row in rsvp_rows:
         rsvp = dict(row)
         rsvp["seat_label"] = seat_display(row["seat_number"], game["total_players"], game_uses_multiple_tables(game))
+        rsvp["push_enabled"] = bool(
+            (rsvp.get("phone") or "").strip() in push_enabled_phones
+            or (str(rsvp.get("status") or "").upper() == "HOST" and organizer_push_enabled)
+        )
         rsvps.append(rsvp)
 
     cur.execute("SELECT * FROM standby WHERE game_id = ? ORDER BY created_at ASC", (game_id,))
@@ -3936,6 +4102,8 @@ def rsvp_game(
     cleaned_invitee_token = normalize_invitee_token(invitee_token)
     now = datetime.utcnow().isoformat()
     invitee_id = ensure_organizer_invitee(conn, int(game["organizer_id"]), cleaned_phone, cleaned_name)
+    previous_seats = seat_map_for_game(conn, int(game["id"]), int(game["total_players"]), game_uses_multiple_tables(game))
+    was_full = count_in(conn, int(game["id"])) >= int(game["total_players"])
 
     existing = None
     if cleaned_phone:
@@ -4002,6 +4170,12 @@ def rsvp_game(
     if cleaned_phone:
         upsert_invitee_profiles(conn, int(game["organizer_id"]), cleaned_phone, cleaned_name)
         issued_invitee_token = ensure_invitee_token_for_phone(conn, cleaned_phone, cleaned_invitee_token)
+    is_full = count_in(conn, int(game["id"])) >= int(game["total_players"])
+    if (not existing) or previous_status != status or (status == "LATE" and cleaned_eta):
+        notify_rsvp_status_push(conn, game, cleaned_name, status, cleaned_eta)
+    if not was_full and is_full:
+        notify_game_full_push(conn, game)
+    notify_changed_seats_push(conn, game, previous_seats)
     conn.commit()
     conn.close()
 

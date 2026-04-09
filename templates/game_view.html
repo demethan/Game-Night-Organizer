@@ -102,6 +102,7 @@
     <tr>
       <th id="sortName" style="cursor: pointer;">Name</th>
       <th class="hide-mobile">Cell</th>
+      <th class="hide-mobile">Push</th>
       <th id="sortSeat" style="cursor: pointer;">Seat</th>
       <th id="sortStatus" style="cursor: pointer;">Status</th>
       <th>ETA</th>
@@ -114,6 +115,7 @@
     <tr data-status="{{ r['status'] }}">
       <td data-label="Name" title="{{ r['name'] }}">{{ r['name'] }}</td>
       <td class="hide-mobile" data-label="Cell">{{ r['phone'] | fmt_phone }}</td>
+      <td class="hide-mobile" data-label="Push">{% if r['push_enabled'] %}✅{% else %}-{% endif %}</td>
       <td data-label="Seat" data-seat-number="{{ r['seat_number'] or '' }}">{{ r['seat_label'] or '-' }}</td>
       <td data-label="Status">{{ r['status'] }}</td>
       <td data-label="ETA">{{ r['late_eta'] or '-' }}</td>
@@ -488,10 +490,12 @@
         const seatLabel = r.seat_label || '-';
         const lateEta = r.late_eta || '-';
         const phoneFmt = r.phone_fmt || '-';
+        const pushMark = r.push_enabled ? '✅' : '-';
         const createdAtFmt = r.created_at_fmt || '';
         return `<tr data-status="${esc(r.status)}">
           <td data-label="Name" title="${esc(r.name)}">${esc(r.name)}</td>
           <td class="hide-mobile" data-label="Cell">${esc(phoneFmt)}</td>
+          <td class="hide-mobile" data-label="Push">${pushMark}</td>
           <td data-label="Seat" data-seat-number="${esc(seatNumber)}">${esc(seatLabel)}</td>
           <td data-label="Status">${esc(r.status)}</td>
           <td data-label="ETA">${esc(lateEta)}</td>

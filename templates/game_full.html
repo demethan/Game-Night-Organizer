@@ -61,6 +61,7 @@
   <div class="row" style="gap:10px; flex-wrap:wrap;">
     <button class="btn secondary" type="button" id="standbyPushEnableBtn">Enable Notifications</button>
     <button class="btn secondary" type="button" id="standbyPushDisableBtn">Disable Notifications</button>
+    <button class="btn" type="button" id="standbyPushTestBtn">Test Notification</button>
     <span class="badge" id="standbyPushStatus">Push: Unknown</span>
   </div>
 </div>
@@ -271,6 +272,7 @@ window.addEventListener('load', () => {
   const phoneInput = document.getElementById('standbyPhone');
   const pushEnableBtn = document.getElementById('standbyPushEnableBtn');
   const pushDisableBtn = document.getElementById('standbyPushDisableBtn');
+  const pushTestBtn = document.getElementById('standbyPushTestBtn');
   const pushStatus = document.getElementById('standbyPushStatus');
   missingAddBtn && missingAddBtn.addEventListener('click', () => { focusStandbyPhoneField(); });
   missingSkipBtn && missingSkipBtn.addEventListener('click', () => { skipStandbyPhoneAndContinue(); });
@@ -286,6 +288,9 @@ window.addEventListener('load', () => {
   }
   pushEnableBtn && pushEnableBtn.addEventListener('click', async () => {
     try {
+      if (window.PokerPush.isiPhoneSafari()) {
+        alert(window.PokerPush.iphoneInstructions());
+      }
       await window.PokerPush.subscribe({
         phone: phoneInput?.value || '',
         invitee_token: document.getElementById('standbyInviteeToken')?.value || '',
@@ -301,6 +306,14 @@ window.addEventListener('load', () => {
       refreshPushState();
     } catch (e) {
       if (pushStatus) pushStatus.textContent = e.message || 'Disable failed';
+    }
+  });
+  pushTestBtn && pushTestBtn.addEventListener('click', async () => {
+    try {
+      const data = await window.PokerPush.sendDeviceTest();
+      if (pushStatus) pushStatus.textContent = `Push: Test sent (${data.sent || 0})`;
+    } catch (e) {
+      if (pushStatus) pushStatus.textContent = e.message || 'Test failed';
     }
   });
   refreshPushState();
