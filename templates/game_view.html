@@ -302,6 +302,8 @@
     const order = { IN: 0, HOST: 1, LATE: 2, OUT: 3 };
     const csrfToken = {{ csrf_token(request) | tojson }};
     const initialMultipleTables = {{ 1 if game['multiple_tables'] else 0 }};
+    const inviteLink = "{{ public_base_url(request) }}/game?g={{ game['code'] }}";
+    const inviteHostName = {{ host_name | default('', true) | tojson }};
     let currentFilter = null;
     let currentSort = 'status';
 
@@ -328,6 +330,18 @@
         game_time: (detailsTime?.value || '').trim(),
         multiple_tables: detailsMultipleTables && detailsMultipleTables.checked ? '1' : '0',
       };
+    }
+
+    function formatInviteTime(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      const match = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+      if (!match) return raw;
+      let hour = parseInt(match[1], 10);
+      const minute = match[2];
+      const suffix = hour >= 12 ? 'PM' : 'AM';
+      hour = hour % 12 || 12;
+      return `${hour}:${minute} ${suffix}`;
     }
 
     let lastDetailsSaved = JSON.stringify(detailsPayload());
@@ -530,12 +544,12 @@
     }
 
     function inviteText(seatLabel) {
-      const link = "{{ public_base_url(request) }}/game?g={{ game['code'] }}";
+      const current = detailsPayload();
+      const link = inviteLink;
       const seatLine = seatLabel ? `\nSeat: ${seatLabel}` : '';
-      const title = {{ game['title'] | tojson }};
-      const hostName = {{ host_name | default('', true) | tojson }};
-      const location = {{ game['location'] | tojson }};
-      const dateRaw = "{{ game['game_date'] }}";
+      const hostName = inviteHostName;
+      const location = current.location;
+      const dateRaw = current.game_date;
       let dateWithDay = dateRaw;
       const parsed = new Date(`${dateRaw}T00:00:00`);
       if (!Number.isNaN(parsed.getTime())) {
@@ -543,7 +557,7 @@
         dateWithDay = `${shortDay} ${dateRaw}`;
       }
       const lead = `${hostName || 'Host'} invited you to a private game.`;
-      return `${lead}\n${dateWithDay} at {{ game['game_time'] | fmt_game_time }}\n${location}\nReply IN, OUT, or LATE 7:30PM` + seatLine + `\n` + link;
+      return `${lead}\n${dateWithDay} at ${formatInviteTime(current.game_time)}\n${location}\nReply IN, OUT, or LATE 7:30PM` + seatLine + `\n` + link;
     }
 
     sortStatusBtn && sortStatusBtn.addEventListener('click', () => {
