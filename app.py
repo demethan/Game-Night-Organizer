@@ -1976,36 +1976,60 @@ def game_snapshot_payload(conn: sqlite3.Connection, game_row) -> dict:
 
 
 def player_in_rate_percent(conn: sqlite3.Connection, game_row, player_row) -> Optional[int]:
-    clauses = ["g.organizer_id = ?"]
-    params: list = [int(game_row["organizer_id"])]
     invitee_id = player_row["invitee_id"] if "invitee_id" in player_row.keys() else None
     phone = str(player_row["phone"] or "").strip() if "phone" in player_row.keys() else ""
-    if invitee_id:
-        clauses.append("r.invitee_id = ?")
-        params.append(int(invitee_id))
-    elif phone:
-        clauses.append("r.phone = ?")
-        params.append(phone)
-    else:
-        clauses.append("LOWER(r.name) = LOWER(?)")
-        params.append(player_row["name"])
     cur = conn.cursor()
+    invitee_row = None
+    if invitee_id:
+        cur.execute(
+            "SELECT id, phone, created_at FROM organizer_invitees WHERE id = ? AND organizer_id = ? LIMIT 1",
+            (int(invitee_id), int(game_row["organizer_id"])),
+        )
+        invitee_row = cur.fetchone()
+    if not invitee_row and phone:
+        cur.execute(
+            "SELECT id, phone, created_at FROM organizer_invitees WHERE organizer_id = ? AND phone = ? LIMIT 1",
+            (int(game_row["organizer_id"]), phone),
+        )
+        invitee_row = cur.fetchone()
+
+    if invitee_row:
+        identity_clause = "(r.invitee_id = ? OR r.phone = ?)"
+        identity_params = [int(invitee_row["id"]), invitee_row["phone"]]
+        games_since_clause = "datetime(g.created_at) >= datetime(?)"
+        games_since_params = [invitee_row["created_at"]]
+    elif phone:
+        identity_clause = "r.phone = ?"
+        identity_params = [phone]
+        games_since_clause = "1 = 1"
+        games_since_params = []
+    else:
+        identity_clause = "LOWER(r.name) = LOWER(?)"
+        identity_params = [player_row["name"]]
+        games_since_clause = "1 = 1"
+        games_since_params = []
+
     cur.execute(
-        f"""
-        SELECT
-            COUNT(*) AS total_games,
-            SUM(CASE WHEN r.status IN ('HOST', 'IN', 'LATE') THEN 1 ELSE 0 END) AS in_games
-        FROM rsvps r
-        JOIN games g ON g.id = r.game_id
-        WHERE {" AND ".join(clauses)}
-          AND r.status IN ('HOST', 'IN', 'LATE', 'OUT')
-        """,
-        params,
+        f"SELECT COUNT(*) AS total_games FROM games g WHERE g.organizer_id = ? AND {games_since_clause}",
+        [int(game_row["organizer_id"])] + games_since_params,
     )
-    row = cur.fetchone()
-    total = int(row["total_games"] or 0) if row else 0
+    total_row = cur.fetchone()
+    total = int(total_row["total_games"] or 0) if total_row else 0
     if total <= 0:
         return None
+    cur.execute(
+        f"""
+        SELECT COUNT(DISTINCT r.game_id) AS in_games
+        FROM rsvps r
+        JOIN games g ON g.id = r.game_id
+        WHERE g.organizer_id = ?
+          AND {games_since_clause}
+          AND {identity_clause}
+          AND r.status IN ('HOST', 'IN', 'LATE')
+        """,
+        [int(game_row["organizer_id"])] + games_since_params + identity_params,
+    )
+    row = cur.fetchone()
     in_games = int(row["in_games"] or 0)
     return round((in_games / total) * 100)
 
