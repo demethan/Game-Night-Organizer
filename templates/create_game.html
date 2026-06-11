@@ -14,12 +14,21 @@
     <input type="text" name="location" list="locationOptions" autocomplete="street-address" placeholder="123 Main St" required value="{{ last_game['location'] if last_game else '' }}">
   </div>
   <div>
+    <label>Game Type</label>
+    <select name="game_type" required>
+      {% set selected_game_type = last_game['game_type'] if last_game and last_game['game_type'] else "Texas Hold'em Cash" %}
+      {% for value in game_type_options %}
+      <option value="{{ value }}" {% if selected_game_type == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
     <label>Date</label>
     <input type="text" name="game_date" id="game_date" class="date-picker" required value="{{ default_game_date }}">
   </div>
   <div>
     <label>Time</label>
-    <input type="text" name="game_time" id="game_time" class="time-picker" required value="{{ last_game['game_time'] if last_game else '' }}">
+    <input type="time" name="game_time" id="game_time" required step="60" value="{{ last_game['game_time'] if last_game else '' }}">
   </div>
   <div>
     <label>Total Players</label>
@@ -73,6 +82,14 @@
 <link rel="stylesheet" href="/static/flatpickr.min.css">
 <script src="/static/flatpickr.min.js"></script>
 <script nonce="{{ csp_nonce(request) }}">
+  function makePickerOnly(instance) {
+    if (!instance || !instance.altInput) return;
+    instance.altInput.setAttribute('readonly', 'readonly');
+    instance.altInput.setAttribute('inputmode', 'none');
+    instance.altInput.setAttribute('autocomplete', 'off');
+    instance.altInput.addEventListener('focus', () => instance.open());
+    instance.altInput.addEventListener('click', () => instance.open());
+  }
   (function() {
     const toggle = document.getElementById('multipleTablesToggle');
     const state = document.getElementById('multipleTablesState');
@@ -86,8 +103,11 @@
     render();
   })();
   if (window.flatpickr) {
-    flatpickr('.date-picker', { dateFormat: 'Y-m-d', disableMobile: true });
-    flatpickr('.time-picker', { enableTime: true, noCalendar: true, dateFormat: 'H:i', altInput: true, altFormat: 'h:i K', disableMobile: true });
+    flatpickr('.date-picker', {
+      dateFormat: 'Y-m-d',
+      disableMobile: true,
+      onReady: [makePickerOnly],
+    });
   }
 </script>
 {% endblock %}

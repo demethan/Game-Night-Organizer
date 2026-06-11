@@ -14,7 +14,7 @@
           <h1 class="host-display-title">{{ game['title'] }}</h1>
         </div>
         <div class="row host-display-badges">
-          <span class="badge host-display-badge" id="inBadge">IN: {{ in_count }}</span>
+          <span class="badge host-display-badge" id="playersBadge">Players: {{ in_count }}</span>
           <span class="badge host-display-badge" id="lateBadge">LATE: {{ late_count }}</span>
         </div>
       </div>
@@ -26,6 +26,7 @@
               <th>Response Time</th>
               <th>Name</th>
               <th>Status</th>
+              <th>In %</th>
               <th>ETA</th>
               <th>Seat</th>
             </tr>
@@ -56,6 +57,7 @@
               </td>
               <td data-label="Name">{{ p['name'] }}</td>
               <td data-label="Status">{{ p['status'] }}</td>
+              <td data-label="In %">{% if p['in_rate_percent'] is not none %}{{ p['in_rate_percent'] }}%{% else %}-{% endif %}</td>
               <td data-label="ETA">{{ p['late_eta'] or '-' }}</td>
               <td data-label="Seat" data-seat-number="{{ p['seat_number'] or '' }}">{{ p['seat_label'] or '-' }}</td>
             </tr>
@@ -72,9 +74,9 @@
     const viewport = document.getElementById('hostDisplayViewport');
     const board = document.getElementById('hostDisplayBoard');
     const tbody = document.querySelector('#hostTable tbody');
-    const inBadge = document.getElementById('inBadge');
+    const playersBadge = document.getElementById('playersBadge');
     const lateBadge = document.getElementById('lateBadge');
-    if (!viewport || !board || !tbody || !inBadge || !lateBadge) return;
+    if (!viewport || !board || !tbody || !playersBadge || !lateBadge) return;
 
     function esc(value) {
       const s = String(value || '');
@@ -122,6 +124,7 @@
         const seatNumber = p.seat_number == null ? '' : String(p.seat_number);
         const seatLabel = p.seat_label || '-';
         const lateEta = p.late_eta || '-';
+        const inRate = p.in_rate_percent == null ? '-' : `${p.in_rate_percent}%`;
         const rank = p.response_rank == null ? '' : String(p.response_rank);
         const responseElapsedMs = p.response_elapsed_ms == null ? '' : String(p.response_elapsed_ms);
         const responseElapsedMsNumber = p.response_elapsed_ms == null ? null : Number(p.response_elapsed_ms);
@@ -138,6 +141,7 @@
           <td data-label="Response Time" data-rank="${esc(rank)}">${esc(speed)}</td>
           <td data-label="Name">${esc(p.name)}</td>
           <td data-label="Status">${esc(p.status)}</td>
+          <td data-label="In %">${esc(inRate)}</td>
           <td data-label="ETA">${esc(lateEta)}</td>
           <td data-label="Seat" data-seat-number="${esc(seatNumber)}">${esc(seatLabel)}</td>
         </tr>`;
@@ -169,7 +173,7 @@
         const response = await fetch(`/h/{{ game['host_code'] }}/snapshot`, { headers: { Accept: 'application/json' } });
         if (!response.ok) return;
         const data = await response.json();
-        inBadge.textContent = `IN: ${data.in_count || 0}`;
+        playersBadge.textContent = `Players: ${data.player_count || data.in_count || 0}`;
         lateBadge.textContent = `LATE: ${data.late_count || 0}`;
         renderRows(data.players || []);
       } catch (e) {

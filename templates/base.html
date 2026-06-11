@@ -39,6 +39,7 @@
   <script nonce="{{ csp_nonce(request) }}">
     window.PokerPush = (function() {
       let cachedKey = null;
+      const endpointStorageKey = 'poker_push_endpoint';
       function isiPhoneSafari() {
         const ua = navigator.userAgent || '';
         const isIPhone = /iPhone/i.test(ua);
@@ -87,10 +88,13 @@
           throw new Error('Notification permission was not granted.');
         }
         const reg = await serviceWorkerRegistration();
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(key),
-        });
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(key),
+          });
+        }
         const res = await fetch('/push/subscribe', {
           method: 'POST',
           headers: {
@@ -101,21 +105,39 @@
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok) throw new Error(data.error || 'Could not save subscription.');
+        try {
+          localStorage.setItem(endpointStorageKey, sub.endpoint || '');
+        } catch (e) {}
         return true;
       }
       async function unsubscribe() {
         const reg = await serviceWorkerRegistration();
         const sub = reg ? await reg.pushManager.getSubscription() : null;
-        if (!sub) return true;
+        let payload = null;
+        if (sub) {
+          payload = { subscription: sub.toJSON() };
+        } else {
+          let endpoint = '';
+          try {
+            endpoint = localStorage.getItem(endpointStorageKey) || '';
+          } catch (e) {}
+          if (!endpoint) return true;
+          payload = { endpoint };
+        }
         await fetch('/push/unsubscribe', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'X-CSRF-Token': csrfToken(),
           },
-          body: JSON.stringify({ subscription: sub.toJSON() }),
+          body: JSON.stringify(payload),
         });
-        await sub.unsubscribe();
+        if (sub) {
+          await sub.unsubscribe();
+        }
+        try {
+          localStorage.removeItem(endpointStorageKey);
+        } catch (e) {}
         return true;
       }
       async function sendTest() {
@@ -147,6 +169,11 @@
         if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
         const reg = await serviceWorkerRegistration();
         const sub = reg ? await reg.pushManager.getSubscription() : null;
+        if (sub && sub.endpoint) {
+          try {
+            localStorage.setItem(endpointStorageKey, sub.endpoint);
+          } catch (e) {}
+        }
         return !!sub;
       }
       return { publicKey, subscribe, unsubscribe, sendTest, sendDeviceTest, isSubscribed, isiPhoneSafari, isStandaloneMode, iphoneInstructions };

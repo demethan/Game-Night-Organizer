@@ -142,20 +142,37 @@
       }
       const responseStatus = String(data?.response_status || '').toUpperCase();
       applyInviteeResponseState(responseStatus, data?.response_seat_label || '', data?.response_rsvp_id || '');
+      return responseStatus;
     } catch (e) {}
+    return '';
   }
 
   syncContactFromServer(savedName || '');
+  window.syncFullContactBeforeStandby = syncContactFromServer;
+  let syncTimer = null;
+  function scheduleContactSync() {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => {
+      syncContactFromServer((nameInput?.value || '').trim());
+    }, 350);
+  }
+  nameInput && nameInput.addEventListener('input', scheduleContactSync);
+  phoneInput && phoneInput.addEventListener('input', scheduleContactSync);
 })();
 
 document.getElementById('standbyForm').addEventListener('submit', async function(event) {
   event.preventDefault();
   const nameInput = document.getElementById('standbyName');
   const phoneInput = document.getElementById('standbyPhone');
-  if (nameInput.value.trim()) {
-    localStorage.setItem('poker_name', nameInput.value.trim());
+  const nameValue = nameInput.value.trim();
+  if (nameValue) {
+    localStorage.setItem('poker_name', nameValue);
   }
   localStorage.setItem('poker_phone', (phoneInput?.value || '').trim());
+  const currentStatus = await window.syncFullContactBeforeStandby?.(nameValue);
+  if (['HOST', 'IN', 'LATE'].includes(String(currentStatus || '').toUpperCase())) {
+    return;
+  }
   const normalized = normalizeStandbyPhone(phoneInput?.value || '');
   if (!normalized && !window._skipStandbyPhonePrompt) {
     openStandbyMissingPhoneModal();

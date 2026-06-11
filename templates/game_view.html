@@ -24,6 +24,7 @@
 {% endif %}
 <p class="game-meta">
   <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</span>
+  <span class="badge" id="gameTypeText">{{ game['game_type'] or "Texas Hold'em Cash" }}</span>
   <span class="game-location">
     📍 <span id="gameLocationText">{{ game['location'] }}</span>
     <button type="button" id="openDetailsModal" class="btn secondary action-pill">Change</button>
@@ -70,6 +71,14 @@
       <div>
         <label>Address</label>
         <input type="text" name="location" required value="{{ game['location'] }}">
+      </div>
+      <div>
+        <label>Game Type</label>
+        <select name="game_type" required>
+          {% for value in ["Texas Hold'em Cash", "Texas Hold'em Tournament", "PLO Cash", "PLO Tournament"] %}
+          <option value="{{ value }}" {% if (game['game_type'] or "Texas Hold'em Cash") == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
       </div>
       <div>
         <label>Date</label>
@@ -282,12 +291,14 @@
     const detailsForm = document.getElementById('gameDetailsForm');
     const detailsStatus = document.getElementById('detailsSaveStatus');
     const detailsLocation = detailsForm ? detailsForm.querySelector('input[name="location"]') : null;
+    const detailsGameType = detailsForm ? detailsForm.querySelector('select[name="game_type"]') : null;
     const detailsDate = detailsForm ? detailsForm.querySelector('input[name="game_date"]') : null;
     const detailsTime = detailsForm ? detailsForm.querySelector('input[name="game_time"]') : null;
     const detailsMultipleTables = detailsForm ? detailsForm.querySelector('input[name="multiple_tables"]') : null;
     const detailsCsrf = detailsForm ? detailsForm.querySelector('input[name="csrf_token"]') : null;
     const gameDateTimeEl = document.querySelector('.game-datetime');
     const gameLocationTextEl = document.getElementById('gameLocationText');
+    const gameTypeTextEl = document.getElementById('gameTypeText');
     const tbody = document.querySelector('#rsvpTable tbody');
     const playersInBadge = document.getElementById('playersInBadge');
     const modal = document.getElementById('rsvpModal');
@@ -321,11 +332,13 @@
       if (!detailsDate || !detailsTime || !detailsLocation) return;
       if (gameDateTimeEl) gameDateTimeEl.textContent = `🗓️ ${detailsDate.value} at ${detailsTime.value}`;
       if (gameLocationTextEl) gameLocationTextEl.textContent = detailsLocation.value;
+      if (gameTypeTextEl && detailsGameType) gameTypeTextEl.textContent = detailsGameType.value;
     }
 
     function detailsPayload() {
       return {
         location: (detailsLocation?.value || '').trim(),
+        game_type: (detailsGameType?.value || '').trim(),
         game_date: (detailsDate?.value || '').trim(),
         game_time: (detailsTime?.value || '').trim(),
         multiple_tables: detailsMultipleTables && detailsMultipleTables.checked ? '1' : '0',
@@ -368,6 +381,7 @@
         const body = new URLSearchParams();
         body.set('csrf_token', detailsCsrf.value || '');
         body.set('location', payload.location);
+        body.set('game_type', payload.game_type);
         body.set('game_date', payload.game_date);
         body.set('game_time', payload.game_time);
         body.set('multiple_tables', payload.multiple_tables);
@@ -549,6 +563,7 @@
       const seatLine = seatLabel ? `\nSeat: ${seatLabel}` : '';
       const hostName = inviteHostName;
       const location = current.location;
+      const gameType = current.game_type || "Texas Hold'em Cash";
       const dateRaw = current.game_date;
       let dateWithDay = dateRaw;
       const parsed = new Date(`${dateRaw}T00:00:00`);
@@ -556,8 +571,8 @@
         const shortDay = parsed.toLocaleDateString('en-US', { weekday: 'short' });
         dateWithDay = `${shortDay} ${dateRaw}`;
       }
-      const lead = `${hostName || 'Host'} invited you to a private game.`;
-      return `${lead}\n${dateWithDay} at ${formatInviteTime(current.game_time)}\n${location}\nReply IN, OUT, or LATE 7:30PM` + seatLine + `\n` + link;
+      const lead = `${hostName || 'Host'} invited you to ${gameType}.`;
+      return `${lead}\n${dateWithDay} at ${formatInviteTime(current.game_time)}\n${location}\nClick link below` + seatLine + `\n` + link;
     }
 
     sortStatusBtn && sortStatusBtn.addEventListener('click', () => {
