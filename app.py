@@ -2599,6 +2599,147 @@ def dashboard(request: Request):
     )
 
 
+@app.get("/stats", response_class=HTMLResponse)
+def stats_view(request: Request):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM games WHERE organizer_id = ? ORDER BY date(game_date) DESC, time(game_time) DESC, id DESC",
+        (int(user_id),),
+    )
+    games = cur.fetchall()
+    cur.execute(
+        """
+        SELECT r.game_id, r.status, COUNT(*) AS count
+        FROM rsvps r
+        JOIN games g ON g.id = r.game_id
+        WHERE g.organizer_id = ?
+        GROUP BY r.game_id, r.status
+        """,
+        (int(user_id),),
+    )
+    rsvp_counts = {}
+    for row in cur.fetchall():
+        rsvp_counts.setdefault(int(row["game_id"]), {})[str(row["status"] or "").upper()] = int(row["count"] or 0)
+    cur.execute("SELECT COUNT(*) AS count FROM organizer_invitees WHERE organizer_id = ?", (int(user_id),))
+    invitee_row = cur.fetchone()
+    unique_invitees = int(invitee_row["count"] or 0) if invitee_row else 0
+    conn.close()
+
+    weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    weekday_stats = {
+        day: {"day": day, "games": 0, "active": 0, "completed": 0, "cancelled": 0, "fill_total": 0.0}
+        for day in weekday_names
+    }
+    game_type_counts = {}
+    recent_cancellations = []
+    total_fill = 0.0
+    active_games = 0
+    completed_games = 0
+    cancelled_games = 0
+    total_player_appearances = 0
+    response_totals = {"IN": 0, "LATE": 0, "OUT": 0}
+
+    for game in games:
+        try:
+            scheduled_date = datetime.fromisoformat(str(game["game_date"])).date()
+            weekday = scheduled_date.strftime("%A")
+            scheduled_label = scheduled_date.strftime("%a %Y-%m-%d")
+        except Exception:
+            weekday = "Monday"
+            scheduled_label = str(game["game_date"] or "")
+        counts = rsvp_counts.get(int(game["id"]), {})
+        players = counts.get("HOST", 0) + counts.get("IN", 0) + counts.get("LATE", 0)
+        capacity = max(1, int(game["total_players"] or 1))
+        fill_percent = min(100.0, (players / capacity) * 100.0)
+        total_fill += fill_percent
+        total_player_appearances += players
+        for status in response_totals:
+            response_totals[status] += counts.get(status, 0)
+
+        cancelled = is_game_cancelled(game)
+        active = not cancelled and not is_game_expired(game)
+        completed = not cancelled and not active
+        if cancelled:
+            cancelled_games += 1
+        elif active:
+            active_games += 1
+        else:
+            completed_games += 1
+
+        day_stats = weekday_stats[weekday]
+        day_stats["games"] += 1
+        day_stats["active"] += 1 if active else 0
+        day_stats["completed"] += 1 if completed else 0
+        day_stats["cancelled"] += 1 if cancelled else 0
+        day_stats["fill_total"] += fill_percent
+
+        game_type = str(game["game_type"] or GAME_TYPE_OPTIONS["texas_holdem_cash"])
+        game_type_counts[game_type] = game_type_counts.get(game_type, 0) + 1
+
+        if cancelled:
+            cancelled_label = "Unknown"
+            cancelled_sort = ""
+            raw_cancelled = str(game["cancelled_at"] or "").strip()
+            if raw_cancelled:
+                try:
+                    cancelled_dt = datetime.fromisoformat(raw_cancelled.replace("Z", "+00:00"))
+                    cancelled_local = thunder_bay_from_utc(cancelled_dt)
+                    cancelled_label = cancelled_local.strftime("%a %Y-%m-%d")
+                    cancelled_sort = cancelled_local.isoformat()
+                except Exception:
+                    cancelled_label = raw_cancelled
+                    cancelled_sort = raw_cancelled
+            recent_cancellations.append(
+                {
+                    "title": game["title"],
+                    "scheduled": scheduled_label,
+                    "cancelled": cancelled_label,
+                    "sort": cancelled_sort,
+                }
+            )
+
+    weekday_rows = []
+    for day in weekday_names:
+        row = weekday_stats[day]
+        row["average_fill"] = round(row["fill_total"] / row["games"]) if row["games"] else None
+        weekday_rows.append(row)
+    game_type_rows = [
+        {"name": name, "count": count, "percent": round((count / len(games)) * 100) if games else 0}
+        for name, count in sorted(game_type_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    recent_cancellations.sort(key=lambda row: row["sort"], reverse=True)
+    total_responses = sum(response_totals.values())
+    positive_responses = response_totals["IN"] + response_totals["LATE"]
+    summary = {
+        "total_games": len(games),
+        "active_games": active_games,
+        "completed_games": completed_games,
+        "cancelled_games": cancelled_games,
+        "cancellation_rate": round((cancelled_games / len(games)) * 100) if games else 0,
+        "average_fill": round(total_fill / len(games)) if games else 0,
+        "unique_invitees": unique_invitees,
+        "player_appearances": total_player_appearances,
+        "positive_response_rate": round((positive_responses / total_responses) * 100) if total_responses else 0,
+    }
+    return templates.TemplateResponse(
+        "stats.html",
+        {
+            "request": request,
+            "title": "Stats",
+            "summary": summary,
+            "weekday_rows": weekday_rows,
+            "game_type_rows": game_type_rows,
+            "response_totals": response_totals,
+            "recent_cancellations": recent_cancellations[:12],
+        },
+    )
+
+
 @app.get("/profile", response_class=HTMLResponse)
 def profile_view(request: Request):
     user_id = require_login(request)

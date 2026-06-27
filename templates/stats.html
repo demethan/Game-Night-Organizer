@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="stats-heading">
+  <div>
+    <h1>Organizer Stats</h1>
+    <p>Performance across your retained game history.</p>
+  </div>
+  <a class="btn secondary" href="/dashboard">Dashboard</a>
+</div>
+
+<div class="stats-kpi-grid">
+  <div class="stats-kpi">
+    <span class="stats-kpi-label">Total Games</span>
+    <strong>{{ summary.total_games }}</strong>
+  </div>
+  <div class="stats-kpi stats-kpi-active">
+    <span class="stats-kpi-label">Active</span>
+    <strong>{{ summary.active_games }}</strong>
+  </div>
+  <div class="stats-kpi">
+    <span class="stats-kpi-label">Completed</span>
+    <strong>{{ summary.completed_games }}</strong>
+  </div>
+  <div class="stats-kpi stats-kpi-cancelled">
+    <span class="stats-kpi-label">Cancelled</span>
+    <strong>{{ summary.cancelled_games }}</strong>
+    <small>{{ summary.cancellation_rate }}% of games</small>
+  </div>
+  <div class="stats-kpi">
+    <span class="stats-kpi-label">Average Fill</span>
+    <strong>{{ summary.average_fill }}%</strong>
+  </div>
+  <div class="stats-kpi">
+    <span class="stats-kpi-label">Invitees</span>
+    <strong>{{ summary.unique_invitees }}</strong>
+  </div>
+  <div class="stats-kpi">
+    <span class="stats-kpi-label">Player Appearances</span>
+    <strong>{{ summary.player_appearances }}</strong>
+  </div>
+  <div class="stats-kpi">
+    <span class="stats-kpi-label">Positive Replies</span>
+    <strong>{{ summary.positive_response_rate }}%</strong>
+    <small>IN or LATE replies</small>
+  </div>
+</div>
+
+<section class="stats-section">
+  <div class="stats-section-title">
+    <h2>Games By Day</h2>
+    <span class="badge">Scheduled weekday</span>
+  </div>
+  <div class="stats-table-wrap">
+    <table class="table stats-table">
+      <thead>
+        <tr>
+          <th>Day</th>
+          <th>Games</th>
+          <th>Active</th>
+          <th>Completed</th>
+          <th>Cancelled</th>
+          <th>Avg Fill</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in weekday_rows %}
+        <tr>
+          <td data-label="Day"><strong>{{ row.day }}</strong></td>
+          <td data-label="Games">{{ row.games }}</td>
+          <td data-label="Active">{{ row.active }}</td>
+          <td data-label="Completed">{{ row.completed }}</td>
+          <td data-label="Cancelled">{{ row.cancelled }}</td>
+          <td data-label="Avg Fill">{% if row.average_fill is not none %}{{ row.average_fill }}%{% else %}-{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="stats-split">
+  <section class="stats-section">
+    <h2>Game Types</h2>
+    {% if game_type_rows %}
+      <div class="stats-bars">
+      {% for row in game_type_rows %}
+        <div class="stats-bar-row">
+          <div class="stats-bar-label">
+            <span>{{ row.name }}</span>
+            <strong>{{ row.count }}</strong>
+          </div>
+          <div class="stats-bar-track"><span style="width: {{ row.percent }}%"></span></div>
+        </div>
+      {% endfor %}
+      </div>
+    {% else %}
+      <p>No game data yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="stats-section">
+    <h2>Recorded Replies</h2>
+    <div class="stats-response-grid">
+      <div><span>IN</span><strong>{{ response_totals.IN }}</strong></div>
+      <div><span>LATE</span><strong>{{ response_totals.LATE }}</strong></div>
+      <div><span>OUT</span><strong>{{ response_totals.OUT }}</strong></div>
+    </div>
+  </section>
+</div>
+
+<section class="stats-section">
+  <h2>Recent Cancellations</h2>
+  {% if recent_cancellations %}
+  <div class="stats-table-wrap">
+    <table class="table stats-table">
+      <thead>
+        <tr>
+          <th>Game</th>
+          <th>Scheduled</th>
+          <th>Cancelled On</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in recent_cancellations %}
+        <tr>
+          <td data-label="Game">{{ row.title }}</td>
+          <td data-label="Scheduled">{{ row.scheduled }}</td>
+          <td data-label="Cancelled On">{{ row.cancelled }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p>No cancelled games.</p>
+  {% endif %}
+</section>
+{% endblock %}
