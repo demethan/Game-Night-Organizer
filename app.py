@@ -1033,8 +1033,14 @@ GAME_TYPE_OPTIONS = {
 
 
 def normalize_game_type(value: Optional[str]) -> str:
-    raw = (value or "").strip().lower().replace(" ", "_").replace("-", "_")
-    return GAME_TYPE_OPTIONS.get(raw, GAME_TYPE_OPTIONS["texas_holdem_cash"])
+    raw = (value or "").strip()
+    if not raw:
+        return GAME_TYPE_OPTIONS["texas_holdem_cash"]
+    lowered = raw.casefold()
+    for key, label in GAME_TYPE_OPTIONS.items():
+        if lowered in {key.casefold(), label.casefold()}:
+            return label
+    return GAME_TYPE_OPTIONS["texas_holdem_cash"]
 
 
 def normalize_phone_10(value: Optional[str]) -> Optional[str]:
@@ -1734,13 +1740,27 @@ def notify_changed_seats_push(conn: sqlite3.Connection, game_row, previous_map: 
     current_map = seat_map_for_game(conn, int(game_row["id"]), int(game_row["total_players"]), game_uses_multiple_tables(game_row))
     sent = 0
     organizer_rows = organizer_push_rows_for_game(conn, game_row)
+    organizer_row_ids = {int(row["id"]) for row in organizer_rows}
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT phone FROM rsvps WHERE game_id = ? AND status = 'HOST' ORDER BY id ASC LIMIT 1",
+        (int(game_row["id"]),),
+    )
+    host_row = cur.fetchone()
+    host_phone = str(host_row["phone"] or "").strip() if host_row else ""
+    changed_count = 0
     for rsvp_id, (name, phone, seat_label) in current_map.items():
         if not seat_label:
             continue
         if previous_map.get(rsvp_id) == (name, phone, seat_label):
             continue
-        if phone:
-            player_rows = web_push_rows_for_invitee_phones(conn, [phone])
+        changed_count += 1
+        if phone and phone != host_phone:
+            player_rows = [
+                row
+                for row in web_push_rows_for_invitee_phones(conn, [phone])
+                if int(row["id"]) not in organizer_row_ids
+            ]
             if player_rows:
                 sent += send_web_push_rows(
                     conn,
@@ -1749,14 +1769,14 @@ def notify_changed_seats_push(conn: sqlite3.Connection, game_row, previous_map: 
                     f"Your seat is {seat_label} for {game_row['title']}.",
                     f"{configured_public_base_url()}/g/{game_row['code']}",
                 )
-        if organizer_rows:
-            sent += send_web_push_rows(
-                conn,
-                organizer_rows,
-                "Seat assigned",
-                f"{name or 'Player'} seat is {seat_label} for {game_row['title']}.",
-                f"{configured_public_base_url()}/games/{game_row['id']}",
-            )
+    if changed_count and organizer_rows:
+        sent += send_web_push_rows(
+            conn,
+            organizer_rows,
+            "Seats assigned",
+            f"Seats have been assigned for {game_row['title']}.",
+            f"{configured_public_base_url()}/games/{game_row['id']}",
+        )
     return sent
 
 
