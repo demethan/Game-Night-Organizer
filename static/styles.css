@@ -19,7 +19,7 @@ body {
   font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
   background:
     linear-gradient(180deg, rgba(8, 12, 18, 0.85), rgba(8, 12, 18, 0.95)),
-    url("/static/game-night-bg.svg") center/cover fixed no-repeat;
+    url("/static/game-night-photo-bg.png") center/cover fixed no-repeat;
   color: var(--text);
 }
 
