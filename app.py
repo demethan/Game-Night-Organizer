@@ -527,8 +527,6 @@ def init_db():
     if "game_type" not in game_cols:
         cur.execute("ALTER TABLE games ADD COLUMN game_type TEXT")
     cur.execute("UPDATE games SET game_type = ? WHERE game_type IS NULL OR TRIM(game_type) = ''", (GAME_TYPE_OPTIONS["game_night"],))
-    cur.execute("UPDATE games SET game_type = 'Card Game' WHERE LOWER(game_type) IN (?, ?, ?, ?)", ("texas hold'em cash", "texas holdem cash", "plo cash", "plo_cash"))
-    cur.execute("UPDATE games SET game_type = 'Tournament Night' WHERE LOWER(game_type) IN (?, ?, ?, ?)", ("texas hold'em tournament", "texas holdem tournament", "plo tournament", "plo_tournament"))
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_games_host_code ON games(host_code)")
     cur.execute(
         """
@@ -1123,6 +1121,10 @@ GAME_TYPE_OPTIONS = {
     "tabletop_rpg": "Tabletop RPG",
     "party_game": "Party Game",
     "tournament_night": "Tournament Night",
+    "texas_holdem_cash": "Texas Hold'em Cash",
+    "texas_holdem_tournament": "Texas Hold'em Tournament",
+    "plo_cash": "PLO Cash",
+    "plo_tournament": "PLO Tournament",
 }
 
 
@@ -1132,16 +1134,16 @@ def normalize_game_type(value: Optional[str]) -> str:
         return GAME_TYPE_OPTIONS["game_night"]
     lowered = raw.casefold()
     legacy_map = {
-        "texas_holdem_cash": "Card Game",
-        "texas hold'em cash": "Card Game",
-        "texas holdem cash": "Card Game",
-        "texas_holdem_tournament": "Tournament Night",
-        "texas hold'em tournament": "Tournament Night",
-        "texas holdem tournament": "Tournament Night",
-        "plo_cash": "Card Game",
-        "plo cash": "Card Game",
-        "plo_tournament": "Tournament Night",
-        "plo tournament": "Tournament Night",
+        "texas_holdem_cash": "Texas Hold'em Cash",
+        "texas hold'em cash": "Texas Hold'em Cash",
+        "texas holdem cash": "Texas Hold'em Cash",
+        "texas_holdem_tournament": "Texas Hold'em Tournament",
+        "texas hold'em tournament": "Texas Hold'em Tournament",
+        "texas holdem tournament": "Texas Hold'em Tournament",
+        "plo_cash": "PLO Cash",
+        "plo cash": "PLO Cash",
+        "plo_tournament": "PLO Tournament",
+        "plo tournament": "PLO Tournament",
     }
     if lowered in legacy_map:
         return legacy_map[lowered]

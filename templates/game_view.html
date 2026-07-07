@@ -76,7 +76,7 @@
       <div>
         <label>Game Type</label>
         <select name="game_type" required>
-          {% for value in ["Game Night", "Tournament Night", "Card Game", "Board Game"] %}
+          {% for value in ["Game Night", "Board Game", "Card Game", "Tabletop RPG", "Party Game", "Tournament Night", "Texas Hold'em Cash", "Texas Hold'em Tournament", "PLO Cash", "PLO Tournament"] %}
           <option value="{{ value }}" {% if (game['game_type'] or "Game Night") == value %}selected{% endif %}>{{ value }}</option>
           {% endfor %}
         </select>
