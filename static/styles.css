@@ -1,10 +1,10 @@
 :root {
-  --bg: #0b0f14;
+  --bg: #111827;
   --panel: #121822;
   --panel-2: #0f141d;
   --text: #e6edf3;
   --muted: #94a3b8;
-  --accent: #f59e0b;
+  --accent: #f4b942;
   --accent-2: #10b981;
   --danger: #ef4444;
   --border: #1f2937;
@@ -19,7 +19,7 @@ body {
   font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
   background:
     linear-gradient(180deg, rgba(8, 12, 18, 0.85), rgba(8, 12, 18, 0.95)),
-    url("/static/poker-bg.jpg") center/cover no-repeat;
+    url("/static/game-night-bg.svg") center/cover fixed no-repeat;
   color: var(--text);
 }
 

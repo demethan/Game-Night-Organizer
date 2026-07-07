@@ -1,6 +1,6 @@
-# Poker Invite Manager
+# Game Night Organizer
 
-Poker Invite Manager is a web app for running recurring private games with organizer accounts, shared invite links, RSVP tracking, standby management, and roster display.
+Game Night Organizer is a web app for running recurring private game nights with organizer accounts, shared invite links, SMS invite waves, RSVP tracking, standby management, and roster display.
 
 ## Current Model
 - Web-only app
@@ -57,7 +57,7 @@ Open `http://localhost:8000`
 
 ## Production Notes
 - Recommended behind Caddy or Nginx with TLS
-- SQLite database file: `poker.db`
+- SQLite database file: `poker.db` in existing deployments
 - Keep `SESSION_SECRET` strong and private
 - Set `APP_BASE_URL` to the public domain
 - Current deployment layout in this environment:

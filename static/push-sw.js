@@ -5,7 +5,7 @@ self.addEventListener('push', (event) => {
   } catch (e) {
     data = {};
   }
-  const title = data.title || 'Poker Invite Manager';
+  const title = data.title || 'Game Night Organizer';
   const body = data.body || 'You have an update.';
   const url = data.url || '/';
   event.waitUntil(

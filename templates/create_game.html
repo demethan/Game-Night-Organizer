@@ -7,7 +7,7 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <div>
     <label>Game Title</label>
-    <input type="text" name="title" list="titleOptions" autocomplete="on" placeholder="Friday Night Poker" required value="{{ last_game['title'] if last_game else '' }}">
+    <input type="text" name="title" list="titleOptions" autocomplete="on" placeholder="Friday Game Night" required value="{{ last_game['title'] if last_game else '' }}">
   </div>
   <div>
     <label>Location</label>
@@ -16,7 +16,7 @@
   <div>
     <label>Game Type</label>
     <select name="game_type" required>
-      {% set selected_game_type = last_game['game_type'] if last_game and last_game['game_type'] else "Texas Hold'em Cash" %}
+      {% set selected_game_type = last_game['game_type'] if last_game and last_game['game_type'] else "Game Night" %}
       {% for value in game_type_options %}
       <option value="{{ value }}" {% if selected_game_type == value %}selected{% endif %}>{{ value }}</option>
       {% endfor %}

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title if title else "Poker Invite Manager" }}</title>
+  <title>{{ title if title else "Game Night Organizer" }}</title>
   <meta name="csrf-token" content="{{ csrf_token(request) }}">
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-app-32.png">
   <link rel="icon" type="image/svg+xml" href="/static/favicon-app.svg">
@@ -15,7 +15,7 @@
 <body class="{% block body_class %}{% endblock %}">
   <div class="app {% block app_class %}{% endblock %}">
     <header class="topbar">
-      <div class="brand">Poker Invite Manager</div>
+      <div class="brand">Game Night Organizer</div>
       {% if request.session.get('user_id') %}
       <nav class="nav">
         <a href="/dashboard">Dashboard</a>
@@ -38,7 +38,7 @@
     </main>
   </div>
   <script nonce="{{ csp_nonce(request) }}">
-    window.PokerPush = (function() {
+    window.GameNightPush = (function() {
       let cachedKey = null;
       const endpointStorageKey = 'poker_push_endpoint';
       function isiPhoneSafari() {
@@ -179,6 +179,7 @@
       }
       return { publicKey, subscribe, unsubscribe, sendTest, sendDeviceTest, isSubscribed, isiPhoneSafari, isStandaloneMode, iphoneInstructions };
     })();
+    window.PokerPush = window.GameNightPush;
   </script>
 </body>
 </html>

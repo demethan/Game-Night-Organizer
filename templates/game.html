@@ -494,16 +494,16 @@ window.addEventListener('load', () => {
     });
   }
   async function refreshPushState() {
-    if (!pushStatus || !window.PokerPush) return;
-    const subscribed = await window.PokerPush.isSubscribed().catch(() => false);
+    if (!pushStatus || !window.GameNightPush) return;
+    const subscribed = await window.GameNightPush.isSubscribed().catch(() => false);
     pushStatus.textContent = subscribed ? 'Push: Enabled' : 'Push: Disabled';
   }
   pushEnableBtn && pushEnableBtn.addEventListener('click', async () => {
     try {
-      if (window.PokerPush.isiPhoneSafari()) {
-        alert(window.PokerPush.iphoneInstructions());
+      if (window.GameNightPush.isiPhoneSafari()) {
+        alert(window.GameNightPush.iphoneInstructions());
       }
-      await window.PokerPush.subscribe({
+      await window.GameNightPush.subscribe({
         phone: phoneInput?.value || '',
         invitee_token: document.getElementById('inviteeToken')?.value || '',
       });
@@ -514,7 +514,7 @@ window.addEventListener('load', () => {
   });
   pushDisableBtn && pushDisableBtn.addEventListener('click', async () => {
     try {
-      await window.PokerPush.unsubscribe();
+      await window.GameNightPush.unsubscribe();
       refreshPushState();
     } catch (e) {
       if (pushStatus) pushStatus.textContent = e.message || 'Disable failed';
@@ -522,7 +522,7 @@ window.addEventListener('load', () => {
   });
   pushTestBtn && pushTestBtn.addEventListener('click', async () => {
     try {
-      const data = await window.PokerPush.sendDeviceTest();
+      const data = await window.GameNightPush.sendDeviceTest();
       if (pushStatus) pushStatus.textContent = `Push: Test sent (${data.sent || 0})`;
     } catch (e) {
       if (pushStatus) pushStatus.textContent = e.message || 'Test failed';

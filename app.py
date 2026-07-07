@@ -56,7 +56,7 @@ TRUSTED_DEVICE_COOKIE = "poker_trusted_device"
 INVITEE_TOKEN_COOKIE = "poker_invitee_token"
 CO_ORG_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$")
 CO_ORG_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-TOTP_ISSUER = "Poker Invite Manager"
+TOTP_ISSUER = "Game Night Organizer"
 CSRF_SIGNED_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 USE_POLICY_VERSION = "2026-06-28"
 LOGICV_SMS_ENDPOINT = "https://sms.logicv.com/api/PokerInviteManangerSendSMS"
@@ -526,7 +526,9 @@ def init_db():
         cur.execute("ALTER TABLE games ADD COLUMN manual_seat_assignment INTEGER DEFAULT 0")
     if "game_type" not in game_cols:
         cur.execute("ALTER TABLE games ADD COLUMN game_type TEXT")
-    cur.execute("UPDATE games SET game_type = ? WHERE game_type IS NULL OR TRIM(game_type) = ''", (GAME_TYPE_OPTIONS["texas_holdem_cash"],))
+    cur.execute("UPDATE games SET game_type = ? WHERE game_type IS NULL OR TRIM(game_type) = ''", (GAME_TYPE_OPTIONS["game_night"],))
+    cur.execute("UPDATE games SET game_type = 'Card Game' WHERE LOWER(game_type) IN (?, ?, ?, ?)", ("texas hold'em cash", "texas holdem cash", "plo cash", "plo_cash"))
+    cur.execute("UPDATE games SET game_type = 'Tournament Night' WHERE LOWER(game_type) IN (?, ?, ?, ?)", ("texas hold'em tournament", "texas holdem tournament", "plo tournament", "plo_tournament"))
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_games_host_code ON games(host_code)")
     cur.execute(
         """
@@ -1115,22 +1117,38 @@ def normalize_game_time(value: str) -> str:
 
 
 GAME_TYPE_OPTIONS = {
-    "texas_holdem_cash": "Texas Hold'em Cash",
-    "texas_holdem_tournament": "Texas Hold'em Tournament",
-    "plo_cash": "PLO Cash",
-    "plo_tournament": "PLO Tournament",
+    "game_night": "Game Night",
+    "board_game": "Board Game",
+    "card_game": "Card Game",
+    "tabletop_rpg": "Tabletop RPG",
+    "party_game": "Party Game",
+    "tournament_night": "Tournament Night",
 }
 
 
 def normalize_game_type(value: Optional[str]) -> str:
     raw = (value or "").strip()
     if not raw:
-        return GAME_TYPE_OPTIONS["texas_holdem_cash"]
+        return GAME_TYPE_OPTIONS["game_night"]
     lowered = raw.casefold()
+    legacy_map = {
+        "texas_holdem_cash": "Card Game",
+        "texas hold'em cash": "Card Game",
+        "texas holdem cash": "Card Game",
+        "texas_holdem_tournament": "Tournament Night",
+        "texas hold'em tournament": "Tournament Night",
+        "texas holdem tournament": "Tournament Night",
+        "plo_cash": "Card Game",
+        "plo cash": "Card Game",
+        "plo_tournament": "Tournament Night",
+        "plo tournament": "Tournament Night",
+    }
+    if lowered in legacy_map:
+        return legacy_map[lowered]
     for key, label in GAME_TYPE_OPTIONS.items():
         if lowered in {key.casefold(), label.casefold()}:
             return label
-    return GAME_TYPE_OPTIONS["texas_holdem_cash"]
+    return GAME_TYPE_OPTIONS["game_night"]
 
 
 def normalize_phone_10(value: Optional[str]) -> Optional[str]:
@@ -3045,7 +3063,7 @@ def stats_view(request: Request):
         day_stats["cancelled"] += 1 if cancelled else 0
         day_stats["fill_total"] += fill_percent
 
-        game_type = str(game["game_type"] or GAME_TYPE_OPTIONS["texas_holdem_cash"])
+        game_type = str(game["game_type"] or GAME_TYPE_OPTIONS["game_night"])
         game_type_counts[game_type] = game_type_counts.get(game_type, 0) + 1
 
         if cancelled:

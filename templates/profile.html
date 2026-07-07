@@ -118,20 +118,20 @@ window.addEventListener('load', () => {
   const disableBtn = document.getElementById('pushDisableBtn');
   const testBtn = document.getElementById('pushTestBtn');
   const badge = document.getElementById('pushStatusBadge');
-  if (!enableBtn || !disableBtn || !testBtn || !badge || !window.PokerPush) return;
+  if (!enableBtn || !disableBtn || !testBtn || !badge || !window.GameNightPush) return;
   function setStatus(text) {
     badge.textContent = text;
   }
   async function refresh() {
-    const subscribed = await window.PokerPush.isSubscribed().catch(() => false);
+    const subscribed = await window.GameNightPush.isSubscribed().catch(() => false);
     setStatus(subscribed ? 'Push: Enabled' : 'Push: Disabled');
   }
   enableBtn.addEventListener('click', async () => {
     try {
-      if (window.PokerPush.isiPhoneSafari()) {
-        alert(window.PokerPush.iphoneInstructions());
+      if (window.GameNightPush.isiPhoneSafari()) {
+        alert(window.GameNightPush.iphoneInstructions());
       }
-      await window.PokerPush.subscribe({});
+      await window.GameNightPush.subscribe({});
       setStatus('Push: Enabled');
     } catch (e) {
       setStatus(e.message || 'Push failed');
@@ -139,7 +139,7 @@ window.addEventListener('load', () => {
   });
   disableBtn.addEventListener('click', async () => {
     try {
-      await window.PokerPush.unsubscribe();
+      await window.GameNightPush.unsubscribe();
       setStatus('Push: Disabled');
     } catch (e) {
       setStatus(e.message || 'Disable failed');
@@ -147,7 +147,7 @@ window.addEventListener('load', () => {
   });
   testBtn.addEventListener('click', async () => {
     try {
-      const data = await window.PokerPush.sendTest();
+      const data = await window.GameNightPush.sendTest();
       setStatus(`Push: Test sent (${data.sent || 0})`);
     } catch (e) {
       setStatus(e.message || 'Test failed');

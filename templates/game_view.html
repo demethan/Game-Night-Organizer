@@ -24,7 +24,7 @@
 {% endif %}
 <p class="game-meta">
   <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</span>
-  <span class="badge" id="gameTypeText">{{ game['game_type'] or "Texas Hold'em Cash" }}</span>
+  <span class="badge" id="gameTypeText">{{ game['game_type'] or "Game Night" }}</span>
   <span class="game-location">
     📍 <span id="gameLocationText">{{ game['location'] }}</span>
     <button type="button" id="openDetailsModal" class="btn secondary action-pill">Change</button>
@@ -76,8 +76,8 @@
       <div>
         <label>Game Type</label>
         <select name="game_type" required>
-          {% for value in ["Texas Hold'em Cash", "Texas Hold'em Tournament", "PLO Cash", "PLO Tournament"] %}
-          <option value="{{ value }}" {% if (game['game_type'] or "Texas Hold'em Cash") == value %}selected{% endif %}>{{ value }}</option>
+          {% for value in ["Game Night", "Tournament Night", "Card Game", "Board Game"] %}
+          <option value="{{ value }}" {% if (game['game_type'] or "Game Night") == value %}selected{% endif %}>{{ value }}</option>
           {% endfor %}
         </select>
       </div>
@@ -601,7 +601,7 @@
       const seatLine = seatLabel ? `\nSeat: ${seatLabel}` : '';
       const hostName = inviteHostName;
       const location = current.location;
-      const gameType = current.game_type || "Texas Hold'em Cash";
+      const gameType = current.game_type || "Game Night";
       const dateRaw = current.game_date;
       let dateWithDay = dateRaw;
       const parsed = new Date(`${dateRaw}T00:00:00`);

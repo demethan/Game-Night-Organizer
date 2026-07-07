@@ -1,4 +1,4 @@
-# User Manual - Poker Invite Manager
+# User Manual - Game Night Organizer
 
 ## Organizer Guide
 
