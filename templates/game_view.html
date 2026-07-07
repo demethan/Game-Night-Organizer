@@ -32,6 +32,7 @@
 </p>
 <div class="row organizer-actions organizer-actions-buttons">
   <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
+  <button type="button" id="openInvitesModal" class="btn secondary action-pill">Invites</button>
   <form method="post" action="/games/{{ game['id'] }}/seats/assign" id="seatAssignForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['manual_seat_assignment'] %}Reassign Seats{% else %}Assign Seats Now{% endif %}</button>
@@ -143,6 +144,39 @@
   {% endfor %}
   </tbody>
 </table>
+
+<div id="invitesModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>Send Invites</h3>
+    <p class="muted">SMS wording is neutral. It does not include the game title or game type.</p>
+    {% if not sms_safe_link_enabled %}
+    <p class="notice">No link will be included until a neutral SMS domain is configured.</p>
+    {% endif %}
+    <form method="post" action="/games/{{ game['id'] }}/sms/invite-lists" class="grid" id="sendInvitesForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div class="invite-list-picker">
+        {% if invitee_lists and invitee_lists|length > 0 %}
+          {% for list in invitee_lists %}
+          <label class="check-row">
+            <input type="checkbox" name="list_ids" value="{{ list['id'] }}">
+            <span>{{ list['name'] }} <small>({{ list['member_count'] }} contacts)</small></span>
+          </label>
+          {% endfor %}
+        {% else %}
+          <p>No distribution lists yet.</p>
+        {% endif %}
+      </div>
+      <div class="sms-preview-box">
+        <strong>SMS example</strong>
+        <p>Hi Alex, {{ host_name or 'Host' }} sent you an invite for {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}.<br>Reply IN, OUT, or LATE.{% if sms_safe_link_enabled %}<br>Link: neutral-domain/game?g=...{% endif %}<br>Reply STOP to stop messages.</p>
+      </div>
+      <div class="row">
+        <button class="btn" type="submit" {% if not invitee_lists or invitee_lists|length == 0 %}disabled{% endif %}>Send SMS</button>
+        <button class="btn secondary" type="button" id="closeInvitesModal">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div id="addPlayerModal" class="modal" style="display:none;">
   <div class="modal-card">
@@ -281,6 +315,10 @@
     const cancelGameForm = document.getElementById('cancelGameForm');
     const openDetailsModalBtn = document.getElementById('openDetailsModal');
     const closeDetailsModalBtn = document.getElementById('closeDetailsModal');
+    const invitesModal = document.getElementById('invitesModal');
+    const openInvitesModalBtn = document.getElementById('openInvitesModal');
+    const closeInvitesModalBtn = document.getElementById('closeInvitesModal');
+    const sendInvitesForm = document.getElementById('sendInvitesForm');
     const addPlayerModal = document.getElementById('addPlayerModal');
     const openAddPlayerModalBtn = document.getElementById('openAddPlayerModal');
     const closeAddPlayerModalBtn = document.getElementById('closeAddPlayerModal');
@@ -639,6 +677,24 @@
     detailsModal && detailsModal.addEventListener('click', (e) => {
       if (e.target === detailsModal) detailsModal.style.display = 'none';
     });
+    openInvitesModalBtn && openInvitesModalBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (invitesModal) invitesModal.style.display = 'flex';
+    });
+    closeInvitesModalBtn && closeInvitesModalBtn.addEventListener('click', () => {
+      if (invitesModal) invitesModal.style.display = 'none';
+    });
+    invitesModal && invitesModal.addEventListener('click', (e) => {
+      if (e.target === invitesModal) invitesModal.style.display = 'none';
+    });
+    sendInvitesForm && sendInvitesForm.addEventListener('submit', (e) => {
+      const checked = sendInvitesForm.querySelectorAll('input[name="list_ids"]:checked');
+      if (!checked.length) {
+        e.preventDefault();
+        alert('Pick at least one list.');
+      }
+    });
+
     openAddPlayerModalBtn && openAddPlayerModalBtn.addEventListener('click', (e) => {
       e.preventDefault();
       if (addPlayerModal) addPlayerModal.style.display = 'flex';

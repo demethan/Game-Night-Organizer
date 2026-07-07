@@ -599,3 +599,85 @@ body.host-display-page .content {
     font-size: 26px;
   }
 }
+
+
+.registration-attestation {
+  grid-column: 1 / -1;
+  padding: 14px;
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: rgba(92, 59, 0, 0.34);
+}
+
+.registration-attestation > strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.registration-attestation p {
+  margin: 0 0 12px;
+  color: #e2e8f0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.registration-attestation a {
+  display: inline-block;
+  margin-top: 10px;
+  color: #fcd34d;
+  font-size: 12px;
+}
+
+.registration-attestation-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.registration-attestation-check input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.invite-list-picker {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.check-row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 12px;
+  display: flex;
+  gap: 10px;
+  padding: 9px 10px;
+}
+
+.check-row input {
+  width: auto;
+}
+
+.check-row small {
+  color: var(--muted);
+}
+
+.sms-preview-box {
+  background: rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.sms-preview-box p {
+  margin-bottom: 0;
+}

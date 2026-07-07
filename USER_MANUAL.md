@@ -4,6 +4,9 @@
 
 ### 1. Account
 - Register at `/register`
+- Account creation requires accepting the private, non-commercial use policy
+- Organizers must invite only people who meet the personal or family relationship criteria
+- Commercial or for-profit games are not permitted
 - Log in at `/login`
 - MFA is authenticator-app only
 - Trusted devices can skip repeated MFA prompts
@@ -29,9 +32,11 @@
 
 ### 5. Share the Invite
 - Open the game page
-- Use `Copy Invite Text`
-- Send your group text manually from your own phone
-- The app does not send SMS messages
+- Use `Copy Invite Text` for manual sharing
+- Use `Invites` to send neutral SMS invites to one or more distribution lists
+- SMS text does not include game type, game title, gambling wording, or the current branded URL
+- SMS links require a neutral `SMS_PUBLIC_BASE_URL`; otherwise invitees reply by SMS with `IN`, `OUT`, or `LATE`
+- `STOP` opts the phone number out of future app SMS
 
 ### 6. Manage the Game
 - Add players manually
@@ -44,11 +49,11 @@
 - Invitees open the shared game link
 - They enter name and optionally phone number
 - Phone number helps the app recognize them on later visits
-- They can respond `IN`, `OUT`, or `LATE`
+- They can respond `IN`, `OUT`, or `LATE` on the web page or by SMS after receiving an app SMS invite
 - They can return later and change their status
 
 ### 8. Identity Behavior
-- The app no longer verifies phone numbers by SMS
+- The app does not verify phone numbers by SMS
 - The browser remembers the invitee when possible
 - If the browser is new or storage was cleared, the invitee may need to re-enter their phone number
 - Old games keep their original display names even if the invitee directory changes later
@@ -72,7 +77,7 @@
 ## Tips
 - Treat the invitee directory as the organizer source of truth
 - Keep phone numbers accurate to avoid duplicate invitees
-- Use invite lists for planning, not for app-managed texting
+- Use invite lists to send staged SMS invite waves
 - Use the roster page on a tablet or TV during the game
 
 ## Troubleshooting

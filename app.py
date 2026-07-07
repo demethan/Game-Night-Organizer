@@ -58,6 +58,9 @@ CO_ORG_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$")
 CO_ORG_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 TOTP_ISSUER = "Poker Invite Manager"
 CSRF_SIGNED_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
+USE_POLICY_VERSION = "2026-06-28"
+LOGICV_SMS_ENDPOINT = "https://sms.logicv.com/api/PokerInviteManangerSendSMS"
+SMS_SAFE_WORDS_RE = re.compile(r"\b(poker|casino|gambl(?:e|ing)|wager|bet|hold'?em|plo|tournament|cash game)\b", re.IGNORECASE)
 
 
 def get_request_csp_nonce(request: Request) -> str:
@@ -487,6 +490,10 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
     if "totp_enabled" not in existing_cols:
         cur.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
+    if "use_policy_accepted_at" not in existing_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN use_policy_accepted_at TEXT")
+    if "use_policy_version" not in existing_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN use_policy_version TEXT")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
     cur.execute(
         """
@@ -713,6 +720,89 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_user ON web_push_subscriptions(user_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_phone ON web_push_subscriptions(phone)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_token ON web_push_subscriptions(invitee_token_hash)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sms_inbound (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            raw_body TEXT NOT NULL,
+            normalized_body TEXT,
+            interpreted_command TEXT,
+            created_at TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            from_phone TEXT,
+            to_phone TEXT,
+            message TEXT,
+            raw_payload TEXT,
+            headers_json TEXT,
+            received_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute("PRAGMA table_info(sms_inbound)")
+    sms_inbound_cols = {row["name"] for row in cur.fetchall()}
+    sms_inbound_migrations = {
+        "phone": "TEXT",
+        "raw_body": "TEXT",
+        "normalized_body": "TEXT",
+        "interpreted_command": "TEXT",
+        "created_at": "TEXT",
+        "provider": "TEXT",
+        "from_phone": "TEXT",
+        "to_phone": "TEXT",
+        "message": "TEXT",
+        "raw_payload": "TEXT",
+        "headers_json": "TEXT",
+        "received_at": "TEXT",
+    }
+    for col_name, col_type in sms_inbound_migrations.items():
+        if col_name not in sms_inbound_cols:
+            cur.execute(f"ALTER TABLE sms_inbound ADD COLUMN {col_name} {col_type}")
+    cur.execute("UPDATE sms_inbound SET provider = 'legacy' WHERE provider IS NULL OR TRIM(provider) = ''")
+    cur.execute("UPDATE sms_inbound SET received_at = COALESCE(created_at, datetime('now')) WHERE received_at IS NULL OR TRIM(received_at) = ''")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_inbound_received_at ON sms_inbound(received_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_inbound_from_phone ON sms_inbound(from_phone)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sms_outbound (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id INTEGER,
+            phone TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            body_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            sent_ok INTEGER NOT NULL DEFAULT 0,
+            detail TEXT
+        )
+        """
+    )
+    cur.execute("PRAGMA table_info(sms_outbound)")
+    sms_outbound_cols = {row["name"] for row in cur.fetchall()}
+    sms_outbound_migrations = {
+        "game_id": "INTEGER",
+        "phone": "TEXT",
+        "kind": "TEXT",
+        "body_hash": "TEXT",
+        "created_at": "TEXT",
+        "sent_ok": "INTEGER DEFAULT 0",
+        "detail": "TEXT",
+    }
+    for col_name, col_type in sms_outbound_migrations.items():
+        if col_name not in sms_outbound_cols:
+            cur.execute(f"ALTER TABLE sms_outbound ADD COLUMN {col_name} {col_type}")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_created_at ON sms_outbound(created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_phone_created_at ON sms_outbound(phone, created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_game_created_at ON sms_outbound(game_id, created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbound_phone_body_created_at ON sms_outbound(phone, body_hash, created_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sms_opt_outs (
+            phone TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            source TEXT
+        )
+        """
+    )
     cur.execute("SELECT id FROM games WHERE host_code IS NULL OR host_code = ''")
     for row in cur.fetchall():
         cur.execute("UPDATE games SET host_code = ? WHERE id = ?", (generate_host_code(conn), row["id"]))
@@ -1056,6 +1146,173 @@ def normalize_phone_10(value: Optional[str]) -> Optional[str]:
 
 def invite_link(request: Request, code: str) -> str:
     return f"{public_base_url(request)}/game?g={code}"
+
+
+def phone_10_to_e164(phone_10: Optional[str]) -> Optional[str]:
+    phone = (phone_10 or "").strip()
+    if not phone:
+        return None
+    return f"+1{phone}"
+
+
+def sms_public_base_url(request: Optional[Request] = None) -> str:
+    configured = (os.getenv("SMS_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    if request is not None:
+        base = public_base_url(request)
+    else:
+        base = configured_public_base_url()
+    # Do not put the current brand domain in SMS; it contains a restricted keyword.
+    if "poker" in base.lower():
+        return ""
+    return base.rstrip("/")
+
+
+def sms_link_for_game(request: Optional[Request], game_code: str) -> str:
+    base = sms_public_base_url(request)
+    if not base:
+        return ""
+    return f"{base}/game?g={game_code}"
+
+
+def assert_sms_safe(body: str) -> None:
+    if SMS_SAFE_WORDS_RE.search(body or ""):
+        raise ValueError("SMS body contains restricted wording")
+
+
+def build_safe_sms_invite_body(request: Optional[Request], game_row, recipient_name: str, host_name: Optional[str]) -> str:
+    name = clean_text(recipient_name or "there", 50)
+    host = clean_text(host_name or "Host", 50)
+    date_label = str(game_row["game_date"] or "").strip()
+    time_label = format_game_time(str(game_row["game_time"] or ""))
+    lines = [
+        f"Hi {name}, {host} sent you an invite for {date_label} at {time_label}.",
+        "Reply IN, OUT, or LATE.",
+    ]
+    link = sms_link_for_game(request, str(game_row["code"]))
+    if link:
+        lines.append(f"Link: {link}")
+    lines.append("Reply STOP to stop messages.")
+    body = "\n".join(line for line in lines if line.strip())
+    assert_sms_safe(body)
+    return body
+
+
+def interpret_sms_reply(message: Optional[str]) -> Optional[str]:
+    raw = str(message or "").strip()
+    if not raw:
+        return None
+    cleaned = re.sub(r"[^a-z0-9' ]+", " ", raw.lower())
+    words = set(cleaned.split())
+    if words & {"stop", "unsubscribe", "remove", "quit"}:
+        return "STOP"
+    if "late" in words or "delayed" in words:
+        return "LATE"
+    if words & {"out", "no", "nope", "cant", "can't", "cannot", "decline", "skip"}:
+        return "OUT"
+    if words & {"in", "yes", "y", "ok", "okay", "coming", "join"}:
+        return "IN"
+    return None
+
+
+def send_logicv_sms(to_e164: str, body: str) -> tuple[bool, str]:
+    assert_sms_safe(body)
+    endpoint = (os.getenv("LOGICV_SMS_ENDPOINT") or LOGICV_SMS_ENDPOINT).strip()
+    payload = json.dumps({"to": to_e164, "message": body}).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            response_body = resp.read().decode("utf-8", errors="replace")
+            ok = 200 <= int(resp.status) < 300
+            return ok, response_body[:1000]
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return False, f"HTTP {exc.code}: {detail[:1000]}"
+    except Exception as exc:
+        return False, str(exc)[:1000]
+
+
+def phone_is_sms_opted_out(conn: sqlite3.Connection, phone_10: str) -> bool:
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM sms_opt_outs WHERE phone = ? LIMIT 1", (phone_10,))
+    return cur.fetchone() is not None
+
+
+def record_sms_outbound(conn: sqlite3.Connection, game_id: Optional[int], phone_10: str, kind: str, body: str, sent_ok: bool, detail: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO sms_outbound (game_id, phone, kind, body_hash, created_at, sent_ok, detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (game_id, phone_10, kind, hashlib.sha256(body.encode("utf-8")).hexdigest(), _utc_now_iso(), 1 if sent_ok else 0, detail[:1000]),
+    )
+
+
+def update_latest_sms_invited_game_from_reply(conn: sqlite3.Connection, phone_10: str, command: str, received_at: str) -> Optional[int]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT o.game_id
+        FROM sms_outbound o
+        JOIN games g ON g.id = o.game_id
+        WHERE o.phone = ?
+          AND o.kind = 'invite'
+          AND o.sent_ok = 1
+          AND COALESCE(g.is_cancelled, 0) = 0
+        ORDER BY datetime(o.created_at) DESC, o.id DESC
+        LIMIT 1
+        """,
+        (phone_10,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    game_id = int(row["game_id"])
+    cur.execute("SELECT * FROM games WHERE id = ? LIMIT 1", (game_id,))
+    game = cur.fetchone()
+    if not game:
+        return None
+    cur.execute("SELECT * FROM rsvps WHERE game_id = ? AND phone = ? ORDER BY id DESC LIMIT 1", (game_id, phone_10))
+    rsvp = cur.fetchone()
+    name = ""
+    invitee_id = None
+    if rsvp:
+        name = (rsvp["name"] or "").strip()
+        invitee_id = rsvp["invitee_id"] if "invitee_id" in rsvp.keys() else None
+    if not name:
+        profile = lookup_invitee_profile(conn, int(game["organizer_id"]), phone_10)
+        if profile:
+            name = profile["name"]
+            invitee_id = profile["id"]
+    if not name:
+        name = f"Guest {phone_10[-4:]}"
+    seat_number = None if command == "OUT" else (rsvp["seat_number"] if rsvp else None)
+    if rsvp:
+        cur.execute(
+            """
+            UPDATE rsvps
+            SET invitee_id = COALESCE(?, invitee_id), name = ?, status = ?, late_eta = ?, seat_number = ?, created_at = ?
+            WHERE id = ?
+            """,
+            (invitee_id, name, command, None, seat_number, received_at, int(rsvp["id"])),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO rsvps (game_id, invitee_id, name, phone, status, late_eta, seat_number, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (game_id, invitee_id, name, phone_10, command, None, seat_number, received_at),
+        )
+    upsert_invitee_profiles(conn, int(game["organizer_id"]), phone_10, name)
+    assign_seats_if_ready(conn, game_id, int(game["total_players"]))
+    return game_id
 
 
 def game_host_name(conn: sqlite3.Connection, game_id: int, fallback: Optional[str] = None) -> Optional[str]:
@@ -2177,6 +2434,102 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/webhooks/sms/inbound")
+async def sms_inbound_webhook(request: Request):
+    configured_token = (os.getenv("INBOUND_SMS_WEBHOOK_TOKEN") or "").strip()
+    if not configured_token:
+        return JSONResponse({"success": False, "error": "Webhook token is not configured"}, status_code=503)
+    auth_header = (request.headers.get("authorization") or "").strip()
+    bearer_token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+    supplied_token = (
+        bearer_token
+        or (request.headers.get("x-webhook-token") or "").strip()
+        or (request.query_params.get("token") or "").strip()
+        or (request.query_params.get("api_key") or "").strip()
+    )
+    if not hmac.compare_digest(supplied_token, configured_token):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+
+    raw_body_bytes = await request.body()
+    raw_body = raw_body_bytes.decode("utf-8", errors="replace")
+    content_type = (request.headers.get("content-type") or "").lower()
+    payload = {}
+    if "application/json" in content_type:
+        try:
+            parsed = json.loads(raw_body or "{}")
+            if isinstance(parsed, dict):
+                payload = parsed
+        except json.JSONDecodeError:
+            payload = {}
+    elif raw_body:
+        parsed_form = urllib.parse.parse_qs(raw_body, keep_blank_values=True)
+        payload = {key: values[-1] if values else "" for key, values in parsed_form.items()}
+
+    def first_text(*keys: str) -> Optional[str]:
+        for key in keys:
+            value = payload.get(key)
+            if value is not None:
+                text_value = str(value).strip()
+                if text_value:
+                    return text_value
+        return None
+
+    from_phone = first_text("from", "From", "from_phone", "fromPhone", "sender", "phone", "msisdn")
+    to_phone = first_text("to", "To", "to_phone", "toPhone", "recipient")
+    message = first_text("message", "Message", "body", "Body", "text", "Text", "content")
+    headers_json = json.dumps(
+        {key: value for key, value in request.headers.items() if key.lower() != "cookie"},
+        sort_keys=True,
+    )
+    raw_payload = json.dumps(payload, sort_keys=True) if payload else None
+
+    conn = get_db()
+    try:
+        try:
+            phone_10 = normalize_phone_10(from_phone or first_text("phone", "Phone"))
+        except ValueError:
+            phone_10 = None
+        inbound_phone = phone_10 or from_phone or first_text("phone", "Phone") or "unknown"
+        received_at = datetime.utcnow().isoformat()
+        command = interpret_sms_reply(message)
+        conn.execute(
+            """
+            INSERT INTO sms_inbound (
+                phone, raw_body, normalized_body, interpreted_command, created_at,
+                provider, from_phone, to_phone, message, raw_payload, headers_json, received_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                inbound_phone,
+                raw_body,
+                str(message or "").strip() or None,
+                command,
+                received_at,
+                "logicv",
+                from_phone,
+                to_phone,
+                message,
+                raw_payload,
+                headers_json,
+                received_at,
+            ),
+        )
+        updated_game_id = None
+        if phone_10 and command == "STOP":
+            conn.execute(
+                "INSERT OR REPLACE INTO sms_opt_outs (phone, created_at, source) VALUES (?, ?, ?)",
+                (phone_10, received_at, "inbound sms"),
+            )
+        elif phone_10 and command in {"IN", "OUT", "LATE"}:
+            updated_game_id = update_latest_sms_invited_game_from_reply(conn, phone_10, command, received_at)
+        conn.commit()
+    finally:
+        conn.close()
+
+    return JSONResponse({"success": True, "command": command, "game_id": updated_game_id})
+
+
 @app.get("/push/public-key")
 def push_public_key():
     return JSONResponse(
@@ -2391,10 +2744,17 @@ def register(
     email: str = Form(...),
     password: str = Form(...),
     name: str = Form(...),
+    private_use_agreement: str = Form(None),
     csrf_token: str = Form(...),
 ):
     if not verify_csrf(request, csrf_token):
         return PlainTextResponse("Bad CSRF token", status_code=400)
+    if str(private_use_agreement or "").strip().lower() not in {"1", "true", "on", "yes"}:
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": "You must accept the private, non-commercial use requirements."},
+            status_code=400,
+        )
     if len(password) < 8 or len(password) > 128:
         return templates.TemplateResponse(
             "register.html",
@@ -2415,9 +2775,16 @@ def register(
     conn = get_db()
     cur = conn.cursor()
     try:
+        accepted_at = datetime.utcnow().isoformat()
         cur.execute(
-            "INSERT INTO users (email, password_hash, name, created_at, is_admin, is_disabled) VALUES (?, ?, ?, ?, 0, 0)",
-            (cleaned_email, password_hash, cleaned_name, datetime.utcnow().isoformat()),
+            """
+            INSERT INTO users (
+                email, password_hash, name, created_at, is_admin, is_disabled,
+                use_policy_accepted_at, use_policy_version
+            )
+            VALUES (?, ?, ?, ?, 0, 0, ?, ?)
+            """,
+            (cleaned_email, password_hash, cleaned_name, accepted_at, accepted_at, USE_POLICY_VERSION),
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -3249,6 +3616,8 @@ def invitee_lists_page(request: Request):
             "request": request,
             "lists": lists,
             "invitee_directory": invitee_directory,
+            "invitee_lists": invitee_lists,
+            "sms_safe_link_enabled": bool(sms_link_for_game(request, str(game["code"]))),
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
@@ -3598,6 +3967,67 @@ def remove_invitee_list_member(request: Request, list_id: int, member_id: int, r
     return RedirectResponse(url=f"{redirect_base}?success=Member%20removed", status_code=302)
 
 
+@app.post("/games/{game_id}/sms/invite-lists")
+def send_sms_invites_to_lists(request: Request, game_id: int, list_ids: List[int] = Form(...), csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+    conn = get_db()
+    try:
+        game, _ = get_game_for_manager(conn, game_id, user_id)
+        if not game:
+            return RedirectResponse(url="/dashboard", status_code=302)
+        if int(game["is_cancelled"] or 0) == 1:
+            return RedirectResponse(url=f"/games/{game_id}?error=Cannot%20send%20SMS%20for%20a%20cancelled%20game", status_code=302)
+        recipients = invitee_list_recipients(conn, int(game["organizer_id"]), [int(v) for v in list_ids])
+        if not recipients:
+            return RedirectResponse(url=f"/games/{game_id}?error=No%20recipients%20selected", status_code=302)
+        host_name = game_host_name(conn, int(game_id), None) or "Host"
+        cur = conn.cursor()
+        sent = 0
+        skipped = 0
+        failed = 0
+        for recipient in recipients:
+            phone_10 = (recipient.get("phone") or "").strip()
+            name = (recipient.get("name") or "").strip()
+            try:
+                phone_10 = normalize_phone_10(phone_10)
+                if not phone_10:
+                    raise ValueError("missing phone")
+            except ValueError:
+                skipped += 1
+                continue
+            if phone_is_sms_opted_out(conn, phone_10):
+                skipped += 1
+                continue
+            invitee_id = ensure_organizer_invitee(conn, int(game["organizer_id"]), phone_10, name)
+            now = _utc_now_iso()
+            cur.execute("SELECT id FROM rsvps WHERE game_id = ? AND phone = ? LIMIT 1", (int(game_id), phone_10))
+            existing = cur.fetchone()
+            if not existing:
+                cur.execute(
+                    """
+                    INSERT INTO rsvps (game_id, invitee_id, name, phone, status, late_eta, seat_number, created_at)
+                    VALUES (?, ?, ?, ?, 'OUT', NULL, NULL, ?)
+                    """,
+                    (int(game_id), invitee_id, clean_text(name or f"Guest {phone_10[-4:]}", 50), phone_10, now),
+                )
+            body = build_safe_sms_invite_body(request, game, name or f"Guest {phone_10[-4:]}", host_name)
+            ok, detail = send_logicv_sms(phone_10_to_e164(phone_10), body)
+            record_sms_outbound(conn, int(game_id), phone_10, "invite", body, ok, detail)
+            if ok:
+                sent += 1
+            else:
+                failed += 1
+        conn.commit()
+        msg = urllib.parse.quote(f"SMS sent: {sent}; skipped: {skipped}; failed: {failed}")
+        return RedirectResponse(url=f"/games/{game_id}?success={msg}", status_code=302)
+    finally:
+        conn.close()
+
+
 @app.get("/games/{game_id}", response_class=HTMLResponse)
 def view_game(request: Request, game_id: int):
     user_id = require_login(request)
@@ -3656,6 +4086,7 @@ def view_game(request: Request, game_id: int):
         (int(game["organizer_id"]),),
     )
     invitee_directory = cur.fetchall()
+    invitee_lists = organizer_invitee_lists_with_members(conn, int(game["organizer_id"]))
 
     in_count = count_in(conn, game_id)
     host_name = game_host_name(conn, int(game["id"]), game["organizer_name"] if "organizer_name" in game.keys() else None)

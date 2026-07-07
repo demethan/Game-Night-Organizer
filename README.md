@@ -4,9 +4,9 @@ Poker Invite Manager is a web app for running recurring private games with organ
 
 ## Current Model
 - Web-only app
-- No app-managed SMS or Twilio integration
-- Organizers contact players outside the app
-- Shared game link for each game
+- App-managed SMS through LogicV for neutral invite/reply workflows
+- SMS wording must stay neutral: no gambling terms, no game type, and no branded URL containing restricted wording
+- Shared game link for each game; SMS links require `SMS_PUBLIC_BASE_URL` to point at a neutral domain
 - Invitee identity is based on the phone number entered in the web form
 - Invitees are organizer-scoped
 
@@ -16,6 +16,7 @@ Poker Invite Manager is a web app for running recurring private games with organ
 - Game creation with title, location, date, time, seats, and optional multiple-table mode
 - Organizer invitee directory at `/invitees`
 - Reusable invite lists at `/invitee-lists`
+- Neutral SMS invites from game distribution lists, with `IN`, `OUT`, `LATE`, and `STOP` reply handling
 - Game page for adding players, editing RSVPs, standby, seat assignment, and co-organizers
 - Invitee RSVP page with `IN`, `OUT`, and `LATE`
 - Host roster page for signage/display use
@@ -37,6 +38,9 @@ Open `http://localhost:8000`
 - `SESSION_SECRET`
 - `SESSION_SECURE`
 - `APP_BASE_URL`
+- `INBOUND_SMS_WEBHOOK_TOKEN`
+- `LOGICV_SMS_ENDPOINT` optional override
+- `SMS_PUBLIC_BASE_URL` optional neutral SMS link domain; if unset and the app domain contains restricted wording, SMS omits links
 
 ## Security
 - Argon2 password hashing
