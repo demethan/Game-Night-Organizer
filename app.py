@@ -1189,11 +1189,15 @@ def sms_public_base_url(request: Optional[Request] = None) -> str:
     return base.rstrip("/")
 
 
-def sms_link_for_game(request: Optional[Request], game_code: str) -> str:
+def sms_link_for_game(request: Optional[Request], game_code: str, invitee_token: Optional[str] = None) -> str:
     base = sms_public_base_url(request)
     if not base:
         return ""
-    return f"{base}/game?g={game_code}"
+    params = {"g": game_code}
+    token = normalize_invitee_token(invitee_token)
+    if token:
+        params["i"] = token
+    return f"{base}/game?{urllib.parse.urlencode(params)}"
 
 
 def assert_sms_safe(body: str) -> None:
@@ -1201,7 +1205,7 @@ def assert_sms_safe(body: str) -> None:
         raise ValueError("SMS body contains restricted wording")
 
 
-def build_safe_sms_invite_body(request: Optional[Request], game_row, recipient_name: str, host_name: Optional[str]) -> str:
+def build_safe_sms_invite_body(request: Optional[Request], game_row, recipient_name: str, host_name: Optional[str], invitee_token: Optional[str] = None) -> str:
     name = clean_text(recipient_name or "there", 50)
     host = clean_text(host_name or "Host", 50)
     date_label = str(game_row["game_date"] or "").strip()
@@ -1210,7 +1214,7 @@ def build_safe_sms_invite_body(request: Optional[Request], game_row, recipient_n
         f"Hi {name}, {host} sent you an invite for {date_label} at {time_label}.",
         "Reply IN, OUT, or LATE.",
     ]
-    link = sms_link_for_game(request, str(game_row["code"]))
+    link = sms_link_for_game(request, str(game_row["code"]), invitee_token)
     if link:
         lines.append(f"Link: {link}")
     lines.append("Reply STOP to stop messages.")
@@ -4032,7 +4036,8 @@ def send_sms_invites_to_lists(request: Request, game_id: int, list_ids: List[int
                     """,
                     (int(game_id), invitee_id, clean_text(name or f"Guest {phone_10[-4:]}", 50), phone_10, now),
                 )
-            body = build_safe_sms_invite_body(request, game, name or f"Guest {phone_10[-4:]}", host_name)
+            invitee_token = ensure_invitee_token_for_phone(conn, phone_10, None)
+            body = build_safe_sms_invite_body(request, game, name or f"Guest {phone_10[-4:]}", host_name, invitee_token)
             ok, detail = send_logicv_sms(phone_10_to_e164(phone_10), body)
             record_sms_outbound(conn, int(game_id), phone_10, "invite", body, ok, detail)
             if ok:
@@ -4657,18 +4662,20 @@ def add_co_organizer(
 
 
 @app.get("/game", response_class=HTMLResponse)
-def game_by_query(request: Request, g: Optional[str] = None):
+def game_by_query(request: Request, g: Optional[str] = None, i: Optional[str] = None):
     if not g:
         return templates.TemplateResponse(
             "game_not_found.html",
             {"request": request, "message": "Missing game code."},
             status_code=404,
         )
-    return RedirectResponse(url=f"/g/{g}", status_code=302)
+    token = normalize_invitee_token(i)
+    suffix = f"?i={urllib.parse.quote(token)}" if token else ""
+    return RedirectResponse(url=f"/g/{g}{suffix}", status_code=302)
 
 
 @app.get("/g/{code}", response_class=HTMLResponse)
-def game_by_code(request: Request, code: str):
+def game_by_code(request: Request, code: str, i: Optional[str] = None):
     user_id = current_user_id(request)
     conn = get_db()
     cur = conn.cursor()
@@ -4719,11 +4726,11 @@ def game_by_code(request: Request, code: str):
     cur.execute("SELECT COUNT(*) AS c FROM rsvps WHERE game_id = ? AND status = 'OUT'", (game["id"],))
     out_count = int(cur.fetchone()["c"])
     roster_players = invitee_roster_payload(conn, game)
-    invitee_token_seed = normalize_invitee_token(request.cookies.get(INVITEE_TOKEN_COOKIE))
+    invitee_token_seed = normalize_invitee_token(i) or normalize_invitee_token(request.cookies.get(INVITEE_TOKEN_COOKIE))
     conn.close()
 
     if in_count >= game["total_players"]:
-        return templates.TemplateResponse(
+        response = templates.TemplateResponse(
             "game_full.html",
             {
                 "request": request,
@@ -4734,8 +4741,11 @@ def game_by_code(request: Request, code: str):
                 "invitee_token_seed": invitee_token_seed,
             },
         )
+        if invitee_token_seed:
+            response.set_cookie(INVITEE_TOKEN_COOKIE, invitee_token_seed, max_age=365 * 24 * 60 * 60, httponly=True, secure=True, samesite="lax")
+        return response
 
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         "game.html",
         {
             "request": request,
@@ -4752,6 +4762,9 @@ def game_by_code(request: Request, code: str):
             "invitee_token_seed": invitee_token_seed,
         },
     )
+    if invitee_token_seed:
+        response.set_cookie(INVITEE_TOKEN_COOKIE, invitee_token_seed, max_age=365 * 24 * 60 * 60, httponly=True, secure=True, samesite="lax")
+    return response
 
 
 @app.get("/h/{host_code}", response_class=HTMLResponse)
