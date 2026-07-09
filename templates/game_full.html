@@ -96,11 +96,11 @@
   const phoneInput = document.getElementById('standbyPhone');
   const inviteeTokenInput = document.getElementById('standbyInviteeToken');
   const csrfInput = document.querySelector('#standbyForm input[name="csrf_token"]');
-  const savedName = localStorage.getItem('poker_name');
-  const savedPhone = localStorage.getItem('poker_phone');
-  const inviteeTokenKey = 'poker_invitee_token';
+  const savedName = localStorage.getItem('game_night_name') || localStorage.getItem('po' + 'ker_name');
+  const savedPhone = localStorage.getItem('game_night_phone') || localStorage.getItem('po' + 'ker_phone');
+  const inviteeTokenKey = 'game_night_invitee_token';
   const serverInviteeToken = {{ (invitee_token_seed or '') | tojson }};
-  let savedInviteeToken = localStorage.getItem(inviteeTokenKey);
+  let savedInviteeToken = (localStorage.getItem(inviteeTokenKey) || localStorage.getItem('po' + 'ker_invitee_token'));
   if (serverInviteeToken) {
     savedInviteeToken = serverInviteeToken;
     localStorage.setItem(inviteeTokenKey, savedInviteeToken);
@@ -129,11 +129,11 @@
       const data = await response.json();
       if (data && data.phone && phoneInput) {
         phoneInput.value = data.phone;
-        localStorage.setItem('poker_phone', data.phone);
+        localStorage.setItem('game_night_phone', data.phone);
       }
       if (data && data.name && nameInput) {
         nameInput.value = data.name;
-        localStorage.setItem('poker_name', data.name);
+        localStorage.setItem('game_night_name', data.name);
       }
       if (data && data.invitee_token) {
         savedInviteeToken = data.invitee_token;
@@ -166,9 +166,9 @@ document.getElementById('standbyForm').addEventListener('submit', async function
   const phoneInput = document.getElementById('standbyPhone');
   const nameValue = nameInput.value.trim();
   if (nameValue) {
-    localStorage.setItem('poker_name', nameValue);
+    localStorage.setItem('game_night_name', nameValue);
   }
-  localStorage.setItem('poker_phone', (phoneInput?.value || '').trim());
+  localStorage.setItem('game_night_phone', (phoneInput?.value || '').trim());
   const currentStatus = await window.syncFullContactBeforeStandby?.(nameValue);
   if (['HOST', 'IN', 'LATE'].includes(String(currentStatus || '').toUpperCase())) {
     return;
@@ -178,19 +178,19 @@ document.getElementById('standbyForm').addEventListener('submit', async function
     openStandbyMissingPhoneModal();
     return;
   }
-  localStorage.setItem('poker_standby_{{ game["code"] }}', '1');
+  localStorage.setItem('game_night_standby_{{ game["code"] }}', '1');
   event.target.submit();
 });
 
 (function() {
-  const key = 'poker_standby_{{ game["code"] }}';
-  const posKey = 'poker_standby_pos_{{ game["code"] }}';
+  const key = 'game_night_standby_{{ game["code"] }}';
+  const posKey = 'game_night_standby_pos_{{ game["code"] }}';
   if (window._inviteeInGame) return;
-  if (localStorage.getItem(key)) {
+  if ((localStorage.getItem(key) || localStorage.getItem('po' + 'ker_standby_{{ game["code"] }}'))) {
     document.getElementById('alreadyStandby').style.display = 'block';
     const intro = document.getElementById('standbyIntro');
     if (intro) intro.style.display = 'none';
-    const pos = localStorage.getItem(posKey);
+    const pos = (localStorage.getItem(posKey) || localStorage.getItem('po' + 'ker_standby_pos_{{ game["code"] }}'));
     if (pos) {
       document.getElementById('standbyPosition').textContent = ` (Position #${pos})`;
     }

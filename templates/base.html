@@ -40,7 +40,7 @@
   <script nonce="{{ csp_nonce(request) }}">
     window.GameNightPush = (function() {
       let cachedKey = null;
-      const endpointStorageKey = 'poker_push_endpoint';
+      const endpointStorageKey = 'game_night_push_endpoint';
       function isiPhoneSafari() {
         const ua = navigator.userAgent || '';
         const isIPhone = /iPhone/i.test(ua);
@@ -179,7 +179,6 @@
       }
       return { publicKey, subscribe, unsubscribe, sendTest, sendDeviceTest, isSubscribed, isiPhoneSafari, isStandaloneMode, iphoneInstructions };
     })();
-    window.PokerPush = window.GameNightPush;
   </script>
 </body>
 </html>

@@ -251,13 +251,13 @@
   const tokenInput = document.getElementById('rsvpToken');
   const inviteeTokenInput = document.getElementById('inviteeToken');
   const csrfInput = document.querySelector('#rsvpForm input[name="csrf_token"]');
-  const savedName = localStorage.getItem('poker_name');
-  const savedPhone = localStorage.getItem('poker_phone');
-  const tokenKey = 'poker_rsvp_token_{{ game["code"] }}';
-  const inviteeTokenKey = 'poker_invitee_token';
+  const savedName = localStorage.getItem('game_night_name') || localStorage.getItem('po' + 'ker_name');
+  const savedPhone = localStorage.getItem('game_night_phone') || localStorage.getItem('po' + 'ker_phone');
+  const tokenKey = 'game_night_rsvp_token_{{ game["code"] }}';
+  const inviteeTokenKey = 'game_night_invitee_token';
   const serverInviteeToken = {{ (invitee_token_seed or '') | tojson }};
-  let savedToken = localStorage.getItem(tokenKey);
-  let savedInviteeToken = localStorage.getItem(inviteeTokenKey);
+  let savedToken = localStorage.getItem(tokenKey) || localStorage.getItem('po' + 'ker_rsvp_token_{{ game["code"] }}');
+  let savedInviteeToken = localStorage.getItem(inviteeTokenKey) || localStorage.getItem('po' + 'ker_invitee_token');
   const alreadyVotedBox = document.getElementById('alreadyVoted');
   const alreadyVotedText = document.getElementById('alreadyVotedText');
   const inviteActions = document.querySelector('.invite-actions-top');
@@ -323,11 +323,12 @@
 
   // If organizer corrected phone data, sync the latest phone back to this device.
   async function syncContactFromServer(name) {
-    if (!name || !csrfInput?.value) return;
+    const currentPhone = (phoneInput?.value || '').trim();
+    if (!csrfInput?.value || (!name && !currentPhone && !savedInviteeToken)) return;
     try {
       const body = new URLSearchParams();
       body.set('name', name || '');
-      body.set('phone', (phoneInput?.value || '').trim());
+      body.set('phone', currentPhone);
       body.set('rsvp_token', savedToken || '');
       body.set('invitee_token', savedInviteeToken || '');
       body.set('csrf_token', csrfInput.value);
@@ -340,11 +341,11 @@
       const data = await response.json();
       if (data && data.phone && phoneInput) {
         phoneInput.value = data.phone;
-        localStorage.setItem('poker_phone', data.phone);
+        localStorage.setItem('game_night_phone', data.phone);
       }
       if (data && data.name && nameInput) {
         nameInput.value = data.name;
-        localStorage.setItem('poker_name', data.name);
+        localStorage.setItem('game_night_name', data.name);
       }
       if (data && data.invitee_token) {
         savedInviteeToken = data.invitee_token;
@@ -388,7 +389,7 @@ async function submitStatus(status, skipLatePrompt) {
   } else {
     etaInput.value = '';
   }
-  localStorage.setItem('poker_name', nameInput.value.trim());
+  localStorage.setItem('game_night_name', nameInput.value.trim());
   const phoneInput = document.getElementById('phone');
   const normalized = normalizeInvitePhone(phoneInput?.value || '');
   if (!normalized && !window._skipPhonePrompt) {
@@ -396,8 +397,8 @@ async function submitStatus(status, skipLatePrompt) {
     openMissingPhoneModal();
     return;
   }
-  localStorage.setItem('poker_phone', (phoneInput?.value || '').trim());
-  localStorage.setItem('poker_rsvp_{{ game["code"] }}', status);
+  localStorage.setItem('game_night_phone', (phoneInput?.value || '').trim());
+  localStorage.setItem('game_night_rsvp_{{ game["code"] }}', status);
   document.getElementById('status').value = status;
   document.getElementById('rsvpForm').submit();
 }

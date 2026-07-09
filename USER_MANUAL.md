@@ -25,43 +25,65 @@
 
 ### 4. Create a Game
 - Open `/games/new`
-- Enter title, location, date, time, and seat count
+- Enter title, location, game type, date, time, and player count
 - Date defaults to today
 - Your organizer row is added as `HOST`
-- If multiple-table mode is enabled, co-organizers can be added later
+- Turn on `Multiple Table Mode` only when the game needs table groups and co-organizers
+- Turn `Seat Assignment` off for games that do not need seats
+- If seat assignment is off, no automatic seats, manual seat button, or seat SMS notices are used
 
 ### 5. Share the Invite
 - Open the game page
 - Use `Copy Invite Text` for manual sharing
 - Use `Invites` to send neutral SMS invites to one or more distribution lists
-- SMS text does not include game type, game title, gambling wording, or the current branded URL
-- SMS links require a neutral `SMS_PUBLIC_BASE_URL`; otherwise invitees reply by SMS with `IN`, `OUT`, or `LATE`
+- SMS text does not include game type, game title, gambling wording, or restricted branded wording
+- SMS links use the neutral app domain when configured
+- Invitees can reply by SMS with `IN`, `OUT`, or `LATE`
 - `STOP` opts the phone number out of future app SMS
 
 ### 6. Manage the Game
 - Add players manually
 - Edit names, phone numbers, and RSVP status
 - Promote standby players
-- Assign seats manually when you are ready
+- Use `Assign Seats Now` only when seat assignment is enabled
 - Open the roster display page for game-time signage
 
-### 7. Invitee RSVP Flow
+### 7. Cancellation
+- Cancelling a game updates the app immediately
+- Push cancellation notices are immediate
+- SMS cancellation notices wait 2 minutes before sending
+- Reopening the game during the 2-minute delay cancels the pending SMS
+- Cancellation SMS says: `Hi Name, the event is cancelled. Reply STOP to stop messages.`
+
+### 8. Seat Notices
+- Seat notices are only sent when `Seat Assignment` is on
+- Multi-table SMS wording: `Hi Name, you are assigned to Table A, seat 1.`
+- Single-table SMS wording: `Hi Name, you are assigned to seat 1.`
+- Seat notices include the STOP line
+
+### 9. Invitee RSVP Flow
 - Invitees open the shared game link
-- They enter name and optionally phone number
-- Phone number helps the app recognize them on later visits
+- SMS invite links can prefill known name/phone using an invitee token
+- Invitees enter name and optionally phone number if not already known
 - They can respond `IN`, `OUT`, or `LATE` on the web page or by SMS after receiving an app SMS invite
 - They can return later and change their status
 
-### 8. Identity Behavior
+### 10. Identity Behavior
 - The app does not verify phone numbers by SMS
 - The browser remembers the invitee when possible
 - If the browser is new or storage was cleared, the invitee may need to re-enter their phone number
+- Phone number remains the main identity key for matching invitees
 - Old games keep their original display names even if the invitee directory changes later
 
-### 9. Roster Display
+### 11. Push Notifications
+- Organizers and invitees can enable push where supported
+- iPhone push requires adding the site to the Home Screen and enabling notifications from the installed web app
+- Some iPhone content blockers can block the service worker; disable the blocker for the site if push setup fails
+
+### 12. Roster Display
 - Open the roster page from the dashboard or organizer view
 - The roster is formatted for full-screen display
-- It shows seats and response-time ranking
+- It shows seats and response-time ranking when seat data exists
 
 ## Admin Guide
 
@@ -78,9 +100,12 @@
 - Treat the invitee directory as the organizer source of truth
 - Keep phone numbers accurate to avoid duplicate invitees
 - Use invite lists to send staged SMS invite waves
+- Turn off seat assignment for casual games that do not need seating
 - Use the roster page on a tablet or TV during the game
 
 ## Troubleshooting
 - If the page looks stale, hard refresh
 - If an invitee is not recognized, have them re-enter their phone number on the web form
-- If the site is unavailable, check `poker-app.service`
+- If SMS does not send, check opt-out status and `sms_outbound`
+- If cancellation SMS does not appear immediately, wait for the 2-minute grace period
+- If the site is unavailable, check the app systemd service

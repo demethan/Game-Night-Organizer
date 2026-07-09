@@ -45,6 +45,127 @@
   </div>
 </div>
 
+
+<section class="stats-section">
+  <div class="stats-section-title">
+    <h2>SMS Health</h2>
+    <span class="badge">Outbound and replies</span>
+  </div>
+  <div class="stats-kpi-grid">
+    <div class="stats-kpi">
+      <span class="stats-kpi-label">SMS Sent</span>
+      <strong>{{ summary.sms_sent }}</strong>
+      <small>{{ summary.sms_success_rate }}% success</small>
+    </div>
+    <div class="stats-kpi stats-kpi-cancelled">
+      <span class="stats-kpi-label">SMS Failed</span>
+      <strong>{{ summary.sms_failed }}</strong>
+    </div>
+    <div class="stats-kpi">
+      <span class="stats-kpi-label">SMS Replies</span>
+      <strong>{{ summary.sms_inbound_total }}</strong>
+    </div>
+    <div class="stats-kpi">
+      <span class="stats-kpi-label">SMS Phones</span>
+      <strong>{{ summary.sms_unique_phones }}</strong>
+    </div>
+    <div class="stats-kpi">
+      <span class="stats-kpi-label">Opt Outs</span>
+      <strong>{{ summary.sms_opt_outs }}</strong>
+    </div>
+    <div class="stats-kpi">
+      <span class="stats-kpi-label">Web Replies</span>
+      <strong>{{ summary.reply_source_web }}</strong>
+    </div>
+    <div class="stats-kpi">
+      <span class="stats-kpi-label">SMS Replies</span>
+      <strong>{{ summary.reply_source_sms }}</strong>
+    </div>
+  </div>
+
+  <div class="stats-split">
+    <div>
+      <h3>Outbound By Type</h3>
+      {% if sms_outbound_by_kind %}
+      <div class="stats-table-wrap">
+        <table class="table stats-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Total</th>
+              <th>Sent</th>
+              <th>Failed</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for row in sms_outbound_by_kind %}
+            <tr>
+              <td data-label="Type">{{ row.kind }}</td>
+              <td data-label="Total">{{ row.total }}</td>
+              <td data-label="Sent">{{ row.sent }}</td>
+              <td data-label="Failed">{{ row.failed }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+        <p>No outbound SMS yet.</p>
+      {% endif %}
+    </div>
+
+    <div>
+      <h3>Inbound Replies</h3>
+      {% if sms_inbound_by_command %}
+      <div class="stats-response-grid">
+        {% for row in sms_inbound_by_command %}
+        <div><span>{{ row.command }}</span><strong>{{ row.total }}</strong></div>
+        {% endfor %}
+      </div>
+      {% else %}
+        <p>No SMS replies yet.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <h3>Reply Source</h3>
+  {% if reply_source_rows %}
+  <div class="stats-response-grid">
+    {% for row in reply_source_rows %}
+    <div><span>{{ row.source|upper }}</span><strong>{{ row.total }}</strong></div>
+    {% endfor %}
+  </div>
+  {% else %}
+    <p>No replies yet.</p>
+  {% endif %}
+
+  {% if sms_recent_failures %}
+  <h3>Recent SMS Failures</h3>
+  <div class="stats-table-wrap">
+    <table class="table stats-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Phone</th>
+          <th>Type</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in sms_recent_failures %}
+        <tr>
+          <td data-label="Time">{{ row.created_at }}</td>
+          <td data-label="Phone">{{ row.phone }}</td>
+          <td data-label="Type">{{ row.kind }}</td>
+          <td data-label="Detail">{{ row.detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
 <section class="stats-section">
   <div class="stats-section-title">
     <h2>Games By Day</h2>

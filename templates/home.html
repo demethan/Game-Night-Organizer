@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Host Game Nights Without Group-Chat Chaos</h1>
+<p>Game Night Organizer helps hosts track RSVPs, seating, and updates from one link.</p>
+
+<div class="card">
+  <h2>How It Works</h2>
+  <p>1. Create an organizer account.</p>
+  <p>2. Create a game with date, time, location, and player count.</p>
+  <p>3. Share your invite link. Players tap the link and RSVP.</p>
+  <p>4. Track live status and optional seat assignments from your dashboard.</p>
+</div>
+
+<div class="card">
+  <h2>Do Players Need Accounts?</h2>
+  <p>No. Players only need the invite link to respond and update their status.</p>
+</div>
+
+<div class="row">
+  <a class="btn" href="/register">Create Organizer Account</a>
+  <a class="btn secondary" href="/login">Organizer Login</a>
+</div>
+{% endblock %}

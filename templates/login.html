@@ -1,20 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Organizer Login</h1>
-<p>Sign in to create and manage games.</p>
-<p class="notice">Admins can log in with their username.</p>
-{% if error %}<div class="error">{{ error }}</div>{% endif %}
-<form method="post" class="grid grid-2">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-<div>
-  <label>Email or Username</label>
-  <input type="text" name="email" required>
+<p>Game Night Organizer helps hosts create games, share RSVP links, and track seats in real time.</p>
+<div class="notice">
+  New here? Organizers create an account once, then manage all games from one dashboard.
 </div>
+<p>Players do not register. They just open the invite link and RSVP.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="post" class="grid grid-2 login-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <div>
+    <label>Email or Username</label>
+    <input type="text" name="email" required>
+  </div>
   <div>
     <label>Password</label>
     <input type="password" name="password" required>
   </div>
-  <div>
+  <div class="form-actions login-actions">
     <button class="btn" type="submit">Login</button>
   </div>
 </form>

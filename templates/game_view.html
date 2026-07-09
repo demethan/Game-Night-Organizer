@@ -33,15 +33,21 @@
 <div class="row organizer-actions organizer-actions-buttons">
   <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
   <button type="button" id="openInvitesModal" class="btn secondary action-pill">Invites</button>
+  {% if game['seat_assignment_enabled'] %}
   <form method="post" action="/games/{{ game['id'] }}/seats/assign" id="seatAssignForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['manual_seat_assignment'] %}Reassign Seats{% else %}Assign Seats Now{% endif %}</button>
   </form>
+  {% endif %}
   <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
 </div>
 <div class="row organizer-actions organizer-actions-badges">
   <span class="badge" id="playersInBadge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
-  {% if game['manual_seat_assignment'] %}<span class="badge">Seats: Manual</span>{% endif %}
+  {% if game['seat_assignment_enabled'] %}
+    {% if game['manual_seat_assignment'] %}<span class="badge">Seats: Manual</span>{% else %}<span class="badge">Seats: Auto</span>{% endif %}
+  {% else %}
+    <span class="badge">Seats: Off</span>
+  {% endif %}
   {% if game['is_cancelled'] %}<span class="badge">Status: Cancelled</span>{% endif %}
 </div>
 {% if game['multiple_tables'] %}
@@ -95,6 +101,12 @@
           Multiple Table Mode
         </label>
       </div>
+      <div>
+        <label style="display:flex; align-items:center; gap:8px; margin:0;">
+          <input type="checkbox" name="seat_assignment_enabled" value="1" {% if game['seat_assignment_enabled'] %}checked{% endif %} style="width:auto;">
+          Seat Assignment
+        </label>
+      </div>
       <div class="row">
         <span class="badge" id="detailsSaveStatus" style="display:none;"></span>
         <button class="btn secondary" type="button" id="closeDetailsModal">Close</button>
@@ -127,7 +139,7 @@
       <td class="hide-mobile" data-label="Cell">{{ r['phone'] | fmt_phone }}</td>
       <td class="hide-mobile" data-label="Push">{% if r['push_enabled'] %}✅{% else %}-{% endif %}</td>
       <td data-label="Seat" data-seat-number="{{ r['seat_number'] or '' }}">{{ r['seat_label'] or '-' }}</td>
-      <td data-label="Status">{{ r['status'] }}</td>
+      <td data-label="Status">{{ r['status_label'] if r['status_label'] else r['status'] }}</td>
       <td data-label="ETA">{{ r['late_eta'] or '-' }}</td>
       <td class="hide-mobile" data-label="Time">{{ r['created_at'] | fmt_ts }}</td>
       <td class="hide-mobile" data-label="Edit">
@@ -333,6 +345,7 @@
     const detailsDate = detailsForm ? detailsForm.querySelector('input[name="game_date"]') : null;
     const detailsTime = detailsForm ? detailsForm.querySelector('input[name="game_time"]') : null;
     const detailsMultipleTables = detailsForm ? detailsForm.querySelector('input[name="multiple_tables"]') : null;
+    const detailsSeatAssignment = detailsForm ? detailsForm.querySelector('input[name="seat_assignment_enabled"]') : null;
     const detailsCsrf = detailsForm ? detailsForm.querySelector('input[name="csrf_token"]') : null;
     const gameDateTimeEl = document.querySelector('.game-datetime');
     const gameLocationTextEl = document.getElementById('gameLocationText');
@@ -351,6 +364,7 @@
     const order = { IN: 0, HOST: 1, LATE: 2, OUT: 3 };
     const csrfToken = {{ csrf_token(request) | tojson }};
     const initialMultipleTables = {{ 1 if game['multiple_tables'] else 0 }};
+    const initialSeatAssignment = {{ 1 if game['seat_assignment_enabled'] else 0 }};
     const inviteLink = "{{ public_base_url(request) }}/game?g={{ game['code'] }}";
     const inviteHostName = {{ host_name | default('', true) | tojson }};
     let currentFilter = null;
@@ -380,6 +394,7 @@
         game_date: (detailsDate?.value || '').trim(),
         game_time: (detailsTime?.value || '').trim(),
         multiple_tables: detailsMultipleTables && detailsMultipleTables.checked ? '1' : '0',
+        seat_assignment_enabled: detailsSeatAssignment && detailsSeatAssignment.checked ? '1' : '0',
       };
     }
 
@@ -423,6 +438,7 @@
         body.set('game_date', payload.game_date);
         body.set('game_time', payload.game_time);
         body.set('multiple_tables', payload.multiple_tables);
+        body.set('seat_assignment_enabled', payload.seat_assignment_enabled);
         const response = await fetch(`/games/${gameId}/details/update`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -432,7 +448,7 @@
         if (response.ok && !redirectedToError) {
           lastDetailsSaved = signature;
           updateDetailsMeta();
-          if (String(payload.multiple_tables) !== String(initialMultipleTables)) {
+          if (String(payload.multiple_tables) !== String(initialMultipleTables) || String(payload.seat_assignment_enabled) !== String(initialSeatAssignment)) {
             window.location.href = `/games/${gameId}?success=Game%20details%20updated`;
             return;
           }
@@ -557,13 +573,14 @@
         const lateEta = r.late_eta || '-';
         const phoneFmt = r.phone_fmt || '-';
         const pushMark = r.push_enabled ? '✅' : '-';
+        const statusLabel = r.status_label || r.status || '-';
         const createdAtFmt = r.created_at_fmt || '';
         return `<tr data-status="${esc(r.status)}">
           <td data-label="Name" title="${esc(r.name)}">${esc(r.name)}</td>
           <td class="hide-mobile" data-label="Cell">${esc(phoneFmt)}</td>
           <td class="hide-mobile" data-label="Push">${pushMark}</td>
           <td data-label="Seat" data-seat-number="${esc(seatNumber)}">${esc(seatLabel)}</td>
-          <td data-label="Status">${esc(r.status)}</td>
+          <td data-label="Status">${esc(statusLabel)}</td>
           <td data-label="ETA">${esc(lateEta)}</td>
           <td class="hide-mobile" data-label="Time">${esc(createdAtFmt)}</td>
           <td class="hide-mobile" data-label="Edit">

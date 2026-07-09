@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Create Game</h1>
-<p>Organizer is included in total players. Seats are assigned randomly when players RSVP.</p>
+<p>Organizer is included in total players. Seat assignment can be turned off for games that do not need seats.</p>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 <form method="post" class="grid grid-2">
   <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
@@ -49,6 +49,13 @@
       <span class="badge" id="multipleTablesState">{% if last_game and last_game['multiple_tables'] %}ON{% else %}OFF{% endif %}</span>
     </label>
   </div>
+  <div>
+    <label style="display:flex; align-items:center; gap:8px; margin-top:26px;">
+      <input type="checkbox" id="seatAssignmentToggle" name="seat_assignment_enabled" value="1" {% if not last_game or last_game['seat_assignment_enabled'] %}checked{% endif %} style="width:auto;">
+      Seat Assignment
+      <span class="badge" id="seatAssignmentState">{% if not last_game or last_game['seat_assignment_enabled'] %}ON{% else %}OFF{% endif %}</span>
+    </label>
+  </div>
   <div id="coOrganizerCreateField">
     <label>Co-organizers (optional)</label>
     <input type="text" name="co_organizers" placeholder="email@site.com, another_user">
@@ -94,12 +101,16 @@
     const toggle = document.getElementById('multipleTablesToggle');
     const state = document.getElementById('multipleTablesState');
     const coField = document.getElementById('coOrganizerCreateField');
+    const seatToggle = document.getElementById('seatAssignmentToggle');
+    const seatState = document.getElementById('seatAssignmentState');
     if (!toggle || !state) return;
     function render() {
       state.textContent = toggle.checked ? 'ON' : 'OFF';
       if (coField) coField.style.display = toggle.checked ? '' : 'none';
+      if (seatToggle && seatState) seatState.textContent = seatToggle.checked ? 'ON' : 'OFF';
     }
     toggle.addEventListener('change', render);
+    if (seatToggle) seatToggle.addEventListener('change', render);
     render();
   })();
   if (window.flatpickr) {
