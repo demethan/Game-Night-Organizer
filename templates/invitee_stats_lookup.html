@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Invitee Stats</h1>
+<p class="muted">{{ game['title'] }} · {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</p>
+{% if error %}<div class="notice notice-strong">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/g/{{ game['code'] }}/stats" class="grid">
+    {% if invitee_token %}<input type="hidden" name="i" value="{{ invitee_token }}">{% endif %}
+    <div>
+      <label>Cell</label>
+      <input type="tel" name="phone" placeholder="+1 (807) 555-1234" required>
+    </div>
+    <div class="row">
+      <button class="btn" type="submit">View Stats</button>
+      <a class="btn secondary" href="/g/{{ game['code'] }}{% if invitee_token %}?i={{ invitee_token | urlencode }}{% endif %}">Back to Invite</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

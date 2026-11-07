@@ -17,7 +17,12 @@
     <header class="topbar">
       <div class="brand">Game Night Organizer</div>
       {% if request.session.get('user_id') %}
-      <nav class="nav">
+      <button type="button" class="menu-toggle" aria-controls="main-menu" aria-expanded="false" aria-label="Menu" hidden>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+      </button>
+      <nav class="nav" id="main-menu" aria-label="Main navigation">
         <a href="/dashboard">Dashboard</a>
         <a href="/stats">Stats</a>
         <a href="/games/new">New Game</a>
@@ -38,14 +43,25 @@
     </main>
   </div>
   <script nonce="{{ csp_nonce(request) }}">
+    const menuToggle = document.querySelector('.menu-toggle');
+    if (menuToggle) {
+      menuToggle.hidden = false;
+      menuToggle.addEventListener('click', () => {
+        const expanded = menuToggle.getAttribute('aria-expanded') === 'true';
+        menuToggle.setAttribute('aria-expanded', String(!expanded));
+      });
+      menuToggle.closest('.topbar').addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && menuToggle.offsetWidth && menuToggle.getAttribute('aria-expanded') === 'true') {
+          menuToggle.setAttribute('aria-expanded', 'false');
+          menuToggle.focus();
+        }
+      });
+    }
     window.GameNightPush = (function() {
       let cachedKey = null;
       const endpointStorageKey = 'game_night_push_endpoint';
-      function isiPhoneSafari() {
-        const ua = navigator.userAgent || '';
-        const isIPhone = /iPhone/i.test(ua);
-        const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS/i.test(ua);
-        return isIPhone && isSafari;
+      function isiPhone() {
+        return /iPhone/i.test(navigator.userAgent || '');
       }
       function isStandaloneMode() {
         return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
@@ -77,12 +93,12 @@
         return reg;
       }
       async function subscribe(context) {
+        if (isiPhone() && !isStandaloneMode()) {
+          throw new Error(iphoneInstructions());
+        }
         const key = await publicKey();
         if (!key || !('PushManager' in window) || !('Notification' in window)) {
           throw new Error('Push notifications are not available on this browser.');
-        }
-        if (isiPhoneSafari() && !isStandaloneMode()) {
-          throw new Error(iphoneInstructions());
         }
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') {
@@ -177,7 +193,7 @@
         }
         return !!sub;
       }
-      return { publicKey, subscribe, unsubscribe, sendTest, sendDeviceTest, isSubscribed, isiPhoneSafari, isStandaloneMode, iphoneInstructions };
+      return { publicKey, subscribe, unsubscribe, sendTest, sendDeviceTest, isSubscribed, isiPhone, isStandaloneMode, iphoneInstructions };
     })();
   </script>
 </body>

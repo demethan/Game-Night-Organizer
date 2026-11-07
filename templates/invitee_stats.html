@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.invitee-stats-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+.invitee-kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-top:16px; }
+.invitee-kpi { padding:14px; border-radius:14px; background:rgba(15,23,42,.55); border:1px solid rgba(148,163,184,.16); }
+.invitee-kpi span { display:block; color:#94a3b8; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+.invitee-kpi strong { display:block; margin-top:6px; font-size:24px; }
+.invitee-table td, .invitee-table th { vertical-align:top; }
+.fun-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:12px; }
+.fun-bit { border:1px solid rgba(148,163,184,.16); border-radius:14px; padding:12px; background:rgba(255,255,255,.04); }
+.fun-bit b { display:block; margin-bottom:5px; }
+@media (max-width:640px) { .invitee-table { font-size:13px; } }
+</style>
+
+<div class="invitee-stats-head">
+  <div>
+    <h1>{{ invitee['name'] }}</h1>
+    <p class="muted">{{ invitee['phone'] | fmt_phone }}</p>
+  </div>
+  <div class="row">
+    <a class="btn secondary" href="/invitees">Back to Invitees</a>
+  </div>
+</div>
+
+<div class="invitee-kpis">
+  <div class="invitee-kpi"><span>Appearances</span><strong>{{ summary.appearances }}</strong></div>
+  <div class="invitee-kpi"><span>IN</span><strong>{{ summary.in_count }}</strong></div>
+  <div class="invitee-kpi"><span>LATE</span><strong>{{ summary.late_count }}</strong></div>
+  <div class="invitee-kpi"><span>OUT</span><strong>{{ summary.out_count }}</strong></div>
+  <div class="invitee-kpi"><span>Attendance</span><strong>{{ summary.attendance_rate }}%</strong></div>
+  <div class="invitee-kpi"><span>Response Rate</span><strong>{{ summary.response_rate }}%</strong></div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2 style="margin-top:0;">Fun Bits</h2>
+  <div class="fun-grid">
+    <div class="fun-bit"><b>Current IN streak</b>{{ summary.current_streak }} game{% if summary.current_streak != 1 %}s{% endif %}</div>
+    <div class="fun-bit"><b>Favorite day</b>{{ summary.favorite_day }}</div>
+    <div class="fun-bit"><b>Favorite game type</b>{{ summary.favorite_type }}</div>
+    <div class="fun-bit"><b>Favorite seat</b>{{ summary.favorite_seat }}</div>
+    <div class="fun-bit"><b>Fastest response</b>{{ summary.fastest_response }}{% if summary.fastest_game != '-' %}<br><span class="muted">{{ summary.fastest_game }}</span>{% endif %}</div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2 style="margin-top:0;">IN Games</h2>
+  {% if in_games and in_games|length > 0 %}
+  <div class="stats-table-wrap" role="region" aria-label="IN games" tabindex="0">
+  <table class="table invitee-table">
+    <thead><tr><th>Date</th><th>Game</th><th>Type</th><th>Status</th><th>Seat</th><th>Response</th></tr></thead>
+    <tbody>
+      {% for game in in_games %}
+      <tr>
+        <td>{{ game.date }}<br><span class="muted">{{ game.time }}</span></td>
+        <td>{{ game.title }}</td>
+        <td>{{ game.game_type }}</td>
+        <td>{{ game.status }}{% if game.late_eta %}<br><span class="muted">ETA {{ game.late_eta }}</span>{% endif %}</td>
+        <td>{{ game.seat_label }}</td>
+        <td>{{ game.response_label }}<br><span class="muted">{{ game.response_source }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p>No IN games yet.</p>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2 style="margin-top:0;">Recent RSVP History</h2>
+  {% if all_games and all_games|length > 0 %}
+  <div class="stats-table-wrap" role="region" aria-label="Recent RSVP history" tabindex="0">
+  <table class="table invitee-table">
+    <thead><tr><th>Date</th><th>Game</th><th>Status</th><th>Seat</th></tr></thead>
+    <tbody>
+      {% for game in all_games %}
+      <tr><td>{{ game.date }}<br><span class="muted">{{ game.time }}</span></td><td>{{ game.title }}</td><td>{{ game.status }}</td><td>{{ game.seat_label }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p>No RSVP history yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

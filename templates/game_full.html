@@ -1,10 +1,59 @@
 {% extends "base.html" %}
+{% block body_class %}rsvp-page{% endblock %}
+{% block extra_head %}
+<style>
+.game-type-line { color: var(--muted); font-size: 0.98rem; margin: -4px 0 8px; }
+.invite-stats { display:flex; align-items:stretch; gap:10px; flex-wrap:nowrap; }
+.invite-stats .invite-stat, .invite-stats .invite-stat-button { flex:1 1 0; }
+.invite-stat-button { display:flex; flex-direction:column; align-items:flex-start; gap:2px; min-width:74px; padding:10px 12px; border:1px solid rgba(148,163,184,.24); border-radius:12px; background:rgba(15,23,42,.72); color:#f8fafc; cursor:pointer; text-align:left; box-shadow:inset 0 0 0 1px rgba(255,255,255,.02); }
+.invite-stat-button:hover { background:rgba(30,41,59,.9); border-color:rgba(148,163,184,.38); }
+.invite-stat-button[aria-expanded="true"] { background:rgba(51,65,85,.94); border-color:rgba(245,158,11,.52); }
+.invite-stat-button[aria-disabled="true"] { cursor:default; }
+.invite-player-list, .invite-out-list { margin-top:10px; }
+</style>
+{% endblock %}
 {% block content %}
 <h1>{{ game['title'] }}</h1>
+<p class="game-type-line">{{ game['game_type'] or "Game Night" }}</p>
 {% if request.query_params.get("error") %}
   <div class="error" id="inviteFullFlashError">{{ request.query_params.get("error") }}</div>
 {% endif %}
 <p>{{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }} • {{ game['location'] }}</p>
+<div class="card invite-status-card">
+  <div class="invite-stats">
+    <button type="button" class="invite-stat invite-stat-button" id="inToggleBtn" aria-expanded="true" aria-controls="inListWrap">
+      <strong>IN:{{ (in_players|length) + (late_players|length) + (1 if host_name else 0) }}</strong>
+    </button>
+    {% if out_count > 0 %}
+    <button type="button" class="invite-stat invite-stat-button" id="outToggleBtn" aria-expanded="false" aria-controls="outListWrap">
+      <strong>OUT:{{ out_count }}</strong>
+    </button>
+    {% else %}
+    <div class="invite-stat">
+      <strong>OUT:{{ out_count }}</strong>
+    </div>
+    {% endif %}
+    <div class="invite-stat invite-stat-button" aria-disabled="true">
+      <strong>SEATS:{{ game['total_players'] }}</strong>
+    </div>
+  </div>
+  {% if (in_players and in_players|length > 0) or (late_players and late_players|length > 0) or host_name %}
+  <div class="invite-player-list" id="inListWrap">
+    <div class="row">
+      {% if host_name %}<span class="badge">🏠 {{ host_name }}</span>{% endif %}
+      {% for name in in_players %}<span class="badge">{{ name }}</span>{% endfor %}
+      {% for name in late_players %}<span class="badge">⏰ {{ name }}</span>{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+  {% if out_players and out_players|length > 0 %}
+  <div class="invite-out-list" id="outListWrap" style="display:none;">
+    <div class="row">
+      {% for name in out_players %}<span class="badge">{{ name }}</span>{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
 <div class="card" id="inGameCard" style="display:none;">
   <h2>You Are In This Game</h2>
   <p><strong id="mySeatLine">You are Seat <span id="mySeatLabel">pending</span></strong></p>
@@ -78,6 +127,35 @@
 </div>
 <script nonce="{{ csp_nonce(request) }}">
 (function() {
+  const inToggleBtn = document.getElementById('inToggleBtn');
+  const inListWrap = document.getElementById('inListWrap');
+  const outToggleBtn = document.getElementById('outToggleBtn');
+  const outListWrap = document.getElementById('outListWrap');
+  if (inToggleBtn && inListWrap) {
+    inToggleBtn.addEventListener('click', () => {
+      const nextOpen = inListWrap.style.display === 'none';
+      inListWrap.style.display = nextOpen ? '' : 'none';
+      inToggleBtn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+      if (outToggleBtn && outListWrap && nextOpen) {
+        outListWrap.style.display = 'none';
+        outToggleBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+  if (outToggleBtn && outListWrap) {
+    outToggleBtn.addEventListener('click', () => {
+      const nextOpen = outListWrap.style.display === 'none';
+      outListWrap.style.display = nextOpen ? '' : 'none';
+      outToggleBtn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+      if (inToggleBtn && inListWrap && nextOpen) {
+        inListWrap.style.display = 'none';
+        inToggleBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+})();
+
+(function() {
   const flash = document.getElementById('inviteFullFlashError');
   if (!flash) return;
   setTimeout(() => { flash.style.display = 'none'; }, 5000);
@@ -127,7 +205,8 @@
       });
       if (!response.ok) return;
       const data = await response.json();
-      if (data && data.phone && phoneInput) {
+      const typedPhone = (phoneInput?.value || '').trim();
+      if (data && data.phone && phoneInput && !typedPhone) {
         phoneInput.value = data.phone;
         localStorage.setItem('game_night_phone', data.phone);
       }
@@ -305,7 +384,7 @@ window.addEventListener('load', () => {
   }
   pushEnableBtn && pushEnableBtn.addEventListener('click', async () => {
     try {
-      if (window.GameNightPush.isiPhoneSafari()) {
+      if (window.GameNightPush.isiPhone() && !window.GameNightPush.isStandaloneMode()) {
         alert(window.GameNightPush.iphoneInstructions());
       }
       await window.GameNightPush.subscribe({

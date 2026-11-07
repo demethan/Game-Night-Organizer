@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>My Stats</h1>
+{% if error %}<div class="notice notice-strong">{{ error }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/my-stats" class="grid">
+    {% if invitee_token %}<input type="hidden" name="i" value="{{ invitee_token }}">{% endif %}
+    <div>
+      <label>Cell</label>
+      <input type="tel" name="phone" placeholder="+1 (807) 555-1234" required>
+    </div>
+    <div class="row">
+      <button class="btn" type="submit">View My Stats</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

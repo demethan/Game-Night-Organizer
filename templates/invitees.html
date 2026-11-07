@@ -173,6 +173,7 @@
         </div>
       </div>
       <div class="invitee-directory-actions">
+        <a class="btn secondary invitee-compact-btn" href="/invitees/{{ invitee['id'] }}/stats">Stats</a>
         <button class="btn secondary invitee-edit-toggle invitee-compact-btn" type="button"><span class="edit-toggle-label">Edit</span></button>
         <form method="post" action="/invitees/{{ invitee['id'] }}/delete" onsubmit="return confirm('Delete this invitee from your directory and saved lists? Past RSVPs will stay in games.');">
           <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">

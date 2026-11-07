@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block body_class %}rsvp-page{% endblock %}
 {% block extra_head %}
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-invite-32.png">
   <link rel="icon" type="image/svg+xml" href="/static/favicon-invite.svg">
@@ -7,6 +8,12 @@
 {% endblock %}
 {% block content %}
 <style>
+
+.game-type-line {
+  color: var(--muted);
+  font-size: 0.98rem;
+  margin: -4px 0 8px;
+}
 .invite-label-row {
   display: inline-flex;
   align-items: center;
@@ -90,6 +97,23 @@
   padding: 12px 18px 13px;
   line-height: 1;
 }
+.current-invitee-row {
+  outline: 2px solid rgba(245, 158, 11, 0.72);
+  background: rgba(245, 158, 11, 0.12);
+}
+.accepted-roster-wrap {
+  margin-top: 10px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.accepted-roster-table {
+  width: 100%;
+  min-width: 360px;
+}
+.accepted-roster-table th,
+.accepted-roster-table td {
+  padding: 9px 10px;
+}
 @media (max-width: 640px) {
   .topbar {
     display: none;
@@ -102,9 +126,46 @@
     line-height: 1.2;
     margin-bottom: 10px;
   }
+  .invite-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .invite-stats {
+    gap: 6px;
+  }
+  .invite-stat-button,
+  .invite-status-card .invite-stat {
+    min-width: 0;
+    padding: 9px 7px;
+    font-size: 0.82rem;
+  }
+  .invite-actions-top {
+    gap: 8px;
+  }
+  .invite-actions-top .invite-btn {
+    min-height: 44px;
+    padding: 10px 8px 11px;
+    font-size: 0.9rem;
+  }
+  #acceptedRosterCard {
+    padding: 14px;
+  }
+  #acceptedRosterCard h2 {
+    font-size: 1.1rem;
+  }
+  .accepted-roster-table {
+    min-width: 0;
+    font-size: 0.9rem;
+  }
+  .accepted-roster-table th,
+  .accepted-roster-table td {
+    padding: 7px 6px;
+  }
 }
 </style>
 <h1>{{ game['title'] }}</h1>
+<p class="game-type-line">{{ game['game_type'] or "Game Night" }}</p>
 {% if request.query_params.get("error") %}
   <div class="error" id="inviteFlashError">{{ request.query_params.get("error") }}</div>
 {% endif %}
@@ -157,13 +218,40 @@
   </div>
   {% endif %}
 </div>
-<div class="invite-actions invite-actions-top">
-  <button class="btn invite-btn invite-btn-in" type="button" id="inviteInBtn">IN</button>
-  <button class="btn danger invite-btn invite-btn-out" type="button" id="inviteOutBtn">OUT</button>
-  <button class="btn secondary invite-btn invite-btn-late" type="button" id="inviteLateBtn">LATE</button>
-</div>
 <div id="alreadyVoted" class="notice notice-strong" style="display:none;">
   <div id="alreadyVotedText">You already responded to this game.</div>
+  <button class="btn secondary" type="button" id="changeResponseBtn" style="margin-top:10px;">Change my response</button>
+</div>
+<div class="card" id="acceptedRosterCard" style="display:none;">
+  <h2>You Are In This Game</h2>
+  <p id="acceptedSeatLine" style="display:none;"><strong>You are Seat <span id="acceptedSeatLabel">pending</span></strong></p>
+  {% if roster_players and roster_players|length > 0 %}
+  <div class="accepted-roster-wrap">
+    <table class="accepted-roster-table">
+      <thead>
+        <tr>
+          <th>Player</th>
+          <th>Status</th>
+          <th>Seat</th>
+        </tr>
+      </thead>
+      <tbody id="acceptedRosterBody">
+        {% for p in roster_players %}
+        <tr data-rsvp-id="{{ p['id'] }}">
+          <td>{{ p['name'] }}</td>
+          <td>{{ p['status'] }}</td>
+          <td>{{ p['seat_label'] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+<div class="invite-actions invite-actions-top">
+  <button class="btn invite-btn invite-btn-in" type="button" id="inviteInBtn">I'm IN</button>
+  <button class="btn danger invite-btn invite-btn-out" type="button" id="inviteOutBtn">I'm OUT</button>
+  <button class="btn secondary invite-btn invite-btn-late" type="button" id="inviteLateBtn">I'm LATE</button>
 </div>
 
 {% if web_push_enabled() %}
@@ -187,6 +275,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="rsvp_token" id="rsvpToken" value="">
     <input type="hidden" name="invitee_token" id="inviteeToken" value="">
+    <input type="hidden" name="confirm_out_change" id="confirmOutChange" value="">
     <div>
       <div class="invite-label-row">
         <label style="margin:0;">Name</label>
@@ -265,10 +354,43 @@
   const inListWrap = document.getElementById('inListWrap');
   const outToggleBtn = document.getElementById('outToggleBtn');
   const outListWrap = document.getElementById('outListWrap');
+  const changeResponseBtn = document.getElementById('changeResponseBtn');
+  const acceptedRosterCard = document.getElementById('acceptedRosterCard');
+  const acceptedSeatLine = document.getElementById('acceptedSeatLine');
+  const acceptedSeatLabel = document.getElementById('acceptedSeatLabel');
+  const acceptedRosterBody = document.getElementById('acceptedRosterBody');
+
+  window._currentInviteStatus = '';
+
+  function setResponseActionsVisible(visible) {
+    if (inviteActions) inviteActions.style.display = visible ? '' : 'none';
+  }
 
   function updateInviteVerifyBadge() {
     return;
   }
+
+  function updateAcceptedRoster(responseStatus, seatLabel, rsvpId) {
+    const isAccepted = responseStatus === 'IN' || responseStatus === 'LATE' || responseStatus === 'HOST';
+    if (acceptedRosterCard) acceptedRosterCard.style.display = isAccepted ? '' : 'none';
+    if (acceptedSeatLine && acceptedSeatLabel) {
+      if (isAccepted && seatLabel) {
+        acceptedSeatLabel.textContent = seatLabel;
+        acceptedSeatLine.style.display = '';
+      } else {
+        acceptedSeatLine.style.display = 'none';
+      }
+    }
+    if (acceptedRosterBody) {
+      Array.from(acceptedRosterBody.querySelectorAll('tr')).forEach((row) => {
+        row.classList.toggle('current-invitee-row', isAccepted && rsvpId && row.dataset.rsvpId === String(rsvpId));
+      });
+    }
+  }
+
+  changeResponseBtn && changeResponseBtn.addEventListener('click', () => {
+    setResponseActionsVisible(true);
+  });
 
   if (inToggleBtn && inListWrap) {
     inToggleBtn.addEventListener('click', () => {
@@ -353,13 +475,15 @@
         if (inviteeTokenInput) inviteeTokenInput.value = data.invitee_token;
       }
       const responseStatus = String(data?.response_status || '').toUpperCase();
+      window._currentInviteStatus = responseStatus;
+      updateAcceptedRoster(responseStatus, data?.response_seat_label || '', data?.response_rsvp_id || '');
       if (alreadyVotedBox) {
         const isKnownResponse = responseStatus === 'IN' || responseStatus === 'OUT' || responseStatus === 'LATE' || responseStatus === 'HOST';
         alreadyVotedBox.style.display = isKnownResponse ? 'block' : 'none';
-        if (inviteActions) inviteActions.style.display = '';
+        setResponseActionsVisible(!isKnownResponse);
         if (isKnownResponse && alreadyVotedText) {
           const statusLabel = responseStatus === 'HOST' ? 'IN' : responseStatus;
-          alreadyVotedText.textContent = `Current status: ${statusLabel}. You can change your response below.`;
+          alreadyVotedText.textContent = `Current status: ${statusLabel}.`;
         }
       }
       updateInviteVerifyBadge();
@@ -375,6 +499,18 @@
 })();
 
 async function submitStatus(status, skipLatePrompt) {
+  const currentStatus = String(window._currentInviteStatus || localStorage.getItem('game_night_rsvp_{{ game["code"] }}') || '').toUpperCase();
+  if (status === 'OUT' && ['IN', 'LATE', 'HOST'].includes(currentStatus)) {
+    const label = currentStatus === 'HOST' ? 'IN' : currentStatus;
+    if (!window.confirm(`You are currently ${label}. Are you sure you want to change your response to OUT?`)) {
+      return;
+    }
+    const confirmInput = document.getElementById('confirmOutChange');
+    if (confirmInput) confirmInput.value = '1';
+  } else {
+    const confirmInput = document.getElementById('confirmOutChange');
+    if (confirmInput) confirmInput.value = '';
+  }
   const nameInput = document.getElementById('name');
   if (!nameInput.value.trim()) {
     nameInput.focus();
@@ -399,6 +535,7 @@ async function submitStatus(status, skipLatePrompt) {
   }
   localStorage.setItem('game_night_phone', (phoneInput?.value || '').trim());
   localStorage.setItem('game_night_rsvp_{{ game["code"] }}', status);
+  window._currentInviteStatus = status;
   document.getElementById('status').value = status;
   document.getElementById('rsvpForm').submit();
 }
@@ -501,7 +638,7 @@ window.addEventListener('load', () => {
   }
   pushEnableBtn && pushEnableBtn.addEventListener('click', async () => {
     try {
-      if (window.GameNightPush.isiPhoneSafari()) {
+      if (window.GameNightPush.isiPhone() && !window.GameNightPush.isStandaloneMode()) {
         alert(window.GameNightPush.iphoneInstructions());
       }
       await window.GameNightPush.subscribe({

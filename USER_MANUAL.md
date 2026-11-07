@@ -43,6 +43,7 @@
 
 ### 6. Manage the Game
 - Add players manually
+- Manually added players do not compete for response-time medals; existing genuine response timestamps are preserved.
 - Edit names, phone numbers, and RSVP status
 - Promote standby players
 - Use `Assign Seats Now` only when seat assignment is enabled
@@ -104,6 +105,10 @@
 - Use the roster page on a tablet or TV during the game
 
 ## Troubleshooting
+- The game's Event Log uses the full browser width. Search by name, phone, message, or source; combine type and UTC date filters; choose oldest/newest first and page through the complete recorded history. SMS acceptance is not a handset delivery receipt. Historical actions that were never logged cannot be reconstructed.
+- In the game's `Invites` popup, select distribution lists, one contact, or both. Duplicate contacts receive only one invite per batch.
+- Failed SMS invites automatically retry up to three times, waiting 1, 5, then 15 minutes between attempts. Check the game's Event Log for results.
+- Pending retries survive restarts and stop on success, opt-out, cancellation, a past game date, or after 24 hours. A provider acceptance is not proof of handset delivery; timeout retries can result in duplicate messages.
 - If the page looks stale, hard refresh
 - If an invitee is not recognized, have them re-enter their phone number on the web form
 - If SMS does not send, check opt-out status and `sms_outbound`

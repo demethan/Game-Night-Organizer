@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block body_class %}game-manager-page{% endblock %}
 {% block content %}
 <div class="organizer-view">
 <div class="organizer-titlebar">
@@ -22,24 +23,29 @@
 {% if game['is_cancelled'] %}
 <div class="error">This game is cancelled. Invitees will see this game as cancelled.</div>
 {% endif %}
-<p class="game-meta">
+<div class="game-meta game-details-box">
+  <div class="game-details-info">
   <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</span>
   <span class="badge" id="gameTypeText">{{ game['game_type'] or "Game Night" }}</span>
   <span class="game-location">
     📍 <span id="gameLocationText">{{ game['location'] }}</span>
-    <button type="button" id="openDetailsModal" class="btn secondary action-pill">Change</button>
   </span>
-</p>
+  </div>
+  <button type="button" id="openDetailsModal" class="btn secondary game-details-edit" aria-label="Edit game details" title="Edit game details">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg>
+  </button>
+</div>
 <div class="row organizer-actions organizer-actions-buttons">
-  <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
   <button type="button" id="openInvitesModal" class="btn secondary action-pill">Invites</button>
+  <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
+  <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
   {% if game['seat_assignment_enabled'] %}
   <form method="post" action="/games/{{ game['id'] }}/seats/assign" id="seatAssignForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn secondary" type="submit">{% if game['manual_seat_assignment'] %}Reassign Seats{% else %}Assign Seats Now{% endif %}</button>
   </form>
   {% endif %}
-  <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
+  <a class="btn secondary action-pill" href="/games/{{ game['id'] }}/event-log">Event Log</a>
 </div>
 <div class="row organizer-actions organizer-actions-badges">
   <span class="badge" id="playersInBadge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
@@ -115,6 +121,37 @@
   </div>
 </div>
 
+<h2>Standby List</h2>
+{% if standby|length == 0 %}
+  <p>No one on standby yet.</p>
+{% else %}
+<table class="table rsvp-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Cell</th>
+      <th>#</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in standby %}
+    <tr>
+      <td data-label="Name">{{ s['name'] }}</td>
+      <td data-label="Cell">{{ s['phone'] | fmt_phone }}</td>
+      <td data-label="#">#{{ loop.index }}</td>
+      <td data-label="Action">
+        <form method="post" action="/games/{{ game['id'] }}/standby/{{ s['id'] }}/promote">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <button class="btn" type="submit">Add IN</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 <div class="rotate-pill" aria-hidden="true">Rotate to landscape to edit RSVPs</div>
 <div class="row organizer-filter-row" style="margin-bottom: 12px;">
   <span class="badge" id="activeFilter" style="display:none;">Filter: <span id="activeFilterValue"></span> (tap to clear)</span>
@@ -160,10 +197,6 @@
 <div id="invitesModal" class="modal" style="display:none;">
   <div class="modal-card">
     <h3>Send Invites</h3>
-    <p class="muted">SMS wording is neutral. It does not include the game title or game type.</p>
-    {% if not sms_safe_link_enabled %}
-    <p class="notice">No link will be included until a neutral SMS domain is configured.</p>
-    {% endif %}
     <form method="post" action="/games/{{ game['id'] }}/sms/invite-lists" class="grid" id="sendInvitesForm">
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <div class="invite-list-picker">
@@ -178,13 +211,23 @@
           <p>No distribution lists yet.</p>
         {% endif %}
       </div>
-      <div class="sms-preview-box">
-        <strong>SMS example</strong>
-        <p>Hi Alex, {{ host_name or 'Host' }} sent you an invite for {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}.<br>Reply IN, OUT, or LATE.{% if sms_safe_link_enabled %}<br>Link: neutral-domain/game?g=...{% endif %}<br>Reply STOP to stop messages.</p>
+      <div>
+        <label for="invitePhone">Invite One Person</label>
+        <select id="invitePhone" name="invite_phone">
+          <option value="">Choose a contact (optional)</option>
+          {% for contact in invitee_directory %}
+          <option value="{{ contact['phone'] }}">{{ contact['name'] }} - {{ contact['phone'] | fmt_phone }}</option>
+          {% endfor %}
+        </select>
       </div>
-      <div class="row">
-        <button class="btn" type="submit" {% if not invitee_lists or invitee_lists|length == 0 %}disabled{% endif %}>Send SMS</button>
+      <div>
+        <label for="inviteMessage">Optional Message</label>
+        <textarea id="inviteMessage" name="invite_message" maxlength="120" rows="2" placeholder="Short note, 120 characters max"></textarea>
+      </div>
+      <div class="row invite-send-actions">
+        <button class="btn" type="submit" id="sendInvitesSubmit">Send SMS</button>
         <button class="btn secondary" type="button" id="closeInvitesModal">Cancel</button>
+        <span class="invite-send-wait" id="sendInvitesWait" aria-live="polite" style="display:none;"><span class="mini-spinner" aria-hidden="true"></span> Sending SMS...</span>
       </div>
     </form>
   </div>
@@ -216,8 +259,9 @@
         <label>Status</label>
         <select name="status" required>
           <option value="IN">IN</option>
-          <option value="LATE">LATE</option>
           <option value="OUT">OUT</option>
+          <option value="LATE">LATE</option>
+          <option value="INVITED">Invite</option>
         </select>
       </div>
       <div class="row">
@@ -227,37 +271,6 @@
     </form>
   </div>
 </div>
-
-<h2>Standby List</h2>
-{% if standby|length == 0 %}
-  <p>No one on standby yet.</p>
-{% else %}
-<table class="table rsvp-table">
-  <thead>
-    <tr>
-      <th>Name</th>
-      <th>Cell</th>
-      <th>#</th>
-      <th>Action</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for s in standby %}
-    <tr>
-      <td data-label="Name">{{ s['name'] }}</td>
-      <td data-label="Cell">{{ s['phone'] | fmt_phone }}</td>
-      <td data-label="#">#{{ loop.index }}</td>
-      <td data-label="Action">
-        <form method="post" action="/games/{{ game['id'] }}/standby/{{ s['id'] }}/promote">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-          <button class="btn" type="submit">Add IN</button>
-        </form>
-      </td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% endif %}
 
 <div id="rsvpModal" class="modal" style="display:none;">
   <div class="modal-card">
@@ -292,12 +305,21 @@
     </form>
   </div>
 </div>
+{% if is_owner %}
+<form method="post" action="/games/{{ game['id'] }}/delete" id="deleteGameForm" style="margin-top: 24px;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <button class="btn danger" type="submit">Delete Game</button>
+</form>
+{% endif %}
 <!-- /.organizer-view -->
 
 <link rel="stylesheet" href="/static/flatpickr.min.css">
 <script src="/static/flatpickr.min.js"></script>
 <script nonce="{{ csp_nonce(request) }}">
   (function() {
+    document.getElementById('deleteGameForm')?.addEventListener('submit', (event) => {
+      if (!window.confirm('Delete this game and all RSVPs?')) event.preventDefault();
+    });
     const flash = document.getElementById('flashSuccess');
     if (flash) {
       setTimeout(() => {
@@ -328,9 +350,21 @@
     const openDetailsModalBtn = document.getElementById('openDetailsModal');
     const closeDetailsModalBtn = document.getElementById('closeDetailsModal');
     const invitesModal = document.getElementById('invitesModal');
+    function fitInvitesViewport() {
+      if (!invitesModal) return;
+      const viewport = window.visualViewport;
+      invitesModal.style.setProperty('--invite-viewport-height', `${viewport ? viewport.height : window.innerHeight}px`);
+      invitesModal.style.setProperty('--invite-viewport-top', `${viewport ? viewport.offsetTop : 0}px`);
+    }
+    fitInvitesViewport();
+    window.addEventListener('resize', fitInvitesViewport);
+    window.visualViewport?.addEventListener('resize', fitInvitesViewport);
+    window.visualViewport?.addEventListener('scroll', fitInvitesViewport);
     const openInvitesModalBtn = document.getElementById('openInvitesModal');
     const closeInvitesModalBtn = document.getElementById('closeInvitesModal');
     const sendInvitesForm = document.getElementById('sendInvitesForm');
+    const sendInvitesSubmit = document.getElementById('sendInvitesSubmit');
+    const sendInvitesWait = document.getElementById('sendInvitesWait');
     const addPlayerModal = document.getElementById('addPlayerModal');
     const openAddPlayerModalBtn = document.getElementById('openAddPlayerModal');
     const closeAddPlayerModalBtn = document.getElementById('closeAddPlayerModal');
@@ -706,10 +740,18 @@
     });
     sendInvitesForm && sendInvitesForm.addEventListener('submit', (e) => {
       const checked = sendInvitesForm.querySelectorAll('input[name="list_ids"]:checked');
-      if (!checked.length) {
+      if (!checked.length && !document.getElementById('invitePhone').value) {
         e.preventDefault();
-        alert('Pick at least one list.');
+        alert('Pick a list or a contact.');
+        return;
       }
+      if (sendInvitesSubmit) {
+        sendInvitesSubmit.disabled = true;
+        sendInvitesSubmit.textContent = 'Sending...';
+      }
+      if (closeInvitesModalBtn) closeInvitesModalBtn.disabled = true;
+      sendInvitesForm.querySelectorAll('input, textarea, select').forEach((field) => { field.readOnly = true; });
+      if (sendInvitesWait) sendInvitesWait.style.display = 'inline-flex';
     });
 
     openAddPlayerModalBtn && openAddPlayerModalBtn.addEventListener('click', (e) => {

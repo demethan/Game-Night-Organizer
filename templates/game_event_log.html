@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block app_class %}event-log-app{% endblock %}
+{% block content %}
+<div class="organizer-view">
+  <div class="organizer-titlebar">
+    <h1 class="game-title">Event Log</h1>
+    <a class="btn secondary" href="/games/{{ game['id'] }}">Back to Game</a>
+  </div>
+  <p class="game-meta">
+    <span>{{ game['title'] }}</span>
+    <span class="badge">{{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</span>
+  </p>
+
+  <form method="get" class="card grid event-log-filter">
+    <div><label for="logSearch">Search name, phone, event, or details</label><input id="logSearch" name="q" value="{{ q }}" type="search"></div>
+    <div class="row">
+      <div><label for="logKind">Type</label><select id="logKind" name="kind">
+      {% for f in filters %}
+      <option value="{{ f }}" {% if selected_kind == f %}selected{% endif %}>{{ f|upper }}</option>
+      {% endfor %}
+      </select></div>
+      <div><label for="logStart">From (UTC)</label><input id="logStart" type="datetime-local" name="start" value="{{ start }}" step="1"></div>
+      <div><label for="logEnd">To (UTC)</label><input id="logEnd" type="datetime-local" name="end" value="{{ end }}" step="1"></div>
+      <div><label for="logOrder">Order</label><select id="logOrder" name="order"><option value="desc" {% if order == 'desc' %}selected{% endif %}>Newest first</option><option value="asc" {% if order == 'asc' %}selected{% endif %}>Oldest first</option></select></div>
+    </div>
+    <div class="row"><button class="btn" type="submit">Apply Filters</button><a class="btn secondary" href="/games/{{ game['id'] }}/event-log">Clear</a></div>
+  </form>
+  <p>{{ total }} events · Page {{ page }} of {{ pages }}. Times shown in UTC.</p>
+
+  {% if events and events|length > 0 %}
+  <div class="event-log-table-wrap">
+    <table class="table event-log-table">
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>Type</th>
+          <th>Who</th>
+          <th>Event</th>
+          <th>Detail</th>
+          <th>Source / ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in events %}
+        <tr>
+          <td data-label="Time">{{ event['created_at'] }}</td>
+          <td data-label="Type"><span class="badge">{{ event['kind']|upper }}</span></td>
+          <td data-label="Who">
+            {{ event['person'] }}
+            {% if event['actor_phone'] %}<span class="muted">{{ event['actor_phone'] | fmt_phone }}</span>{% endif %}
+          </td>
+          <td data-label="Event">{{ event['message'] }}</td>
+          <td data-label="Detail" class="event-log-detail-cell">{{ event['detail'] or '-' }}</td>
+          <td>{{ event['source'] }}<br><small>{{ event['event_id'] }}</small></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card"><p>No events found for this filter.</p></div>
+  {% endif %}
+  <div class="row" style="margin-top:16px;">
+    {% if prev_url %}<a class="btn secondary" href="{{ prev_url }}">Previous</a>{% endif %}
+    {% if next_url %}<a class="btn secondary" href="{{ next_url }}">Next</a>{% endif %}
+  </div>
+</div>
+{% endblock %}

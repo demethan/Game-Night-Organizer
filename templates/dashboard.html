@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block body_class %}dashboard-page{% endblock %}
 {% block content %}
 <h1>Welcome, {{ user['name'] }}</h1>
 <div class="row">
@@ -12,13 +13,13 @@
   {% for game in games %}
   <div class="card">
     <h3>{{ game['title'] }}</h3>
-    <p>{{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }} • {{ game['location'] }}</p>
+    <p>{{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }} <span class="dashboard-game-location">• {{ game['location'] }}</span></p>
     <div class="row">
       <span class="badge">Total Players: {{ game['total_players'] }}</span>
       {% if not game['is_owner'] %}<span class="badge">Shared</span>{% endif %}
       {% if game['is_cancelled'] %}<span class="badge">Cancelled</span>{% endif %}
     </div>
-    <div class="row" style="margin-top: 12px;">
+    <div class="row dashboard-game-actions" style="margin-top: 12px;">
       <a class="btn secondary" href="/games/{{ game['id'] }}">View</a>
       <button
         class="btn secondary copy-btn"
@@ -30,12 +31,6 @@
         data-location="{{ game['location'] }}"
       >Copy Invite Link</button>
       <a class="btn secondary" href="/h/{{ game['host_code'] }}">Open Roster</a>
-      {% if game['is_owner'] %}
-      <form method="post" action="/games/{{ game['id'] }}/delete" class="confirm-delete-game" style="margin-left:auto;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-        <button class="btn danger" type="submit">Delete Game</button>
-      </form>
-      {% endif %}
     </div>
   </div>
   {% endfor %}
@@ -54,13 +49,6 @@
         } catch (e) {
           prompt('Copy this link:', link);
         }
-      });
-    });
-
-    const deleteForms = document.querySelectorAll('form.confirm-delete-game');
-    deleteForms.forEach(form => {
-      form.addEventListener('submit', (e) => {
-        if (!window.confirm('Delete this game and all RSVPs?')) e.preventDefault();
       });
     });
   })();

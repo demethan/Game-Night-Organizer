@@ -128,7 +128,7 @@ window.addEventListener('load', () => {
   }
   enableBtn.addEventListener('click', async () => {
     try {
-      if (window.GameNightPush.isiPhoneSafari()) {
+      if (window.GameNightPush.isiPhone() && !window.GameNightPush.isStandaloneMode()) {
         alert(window.GameNightPush.iphoneInstructions());
       }
       await window.GameNightPush.subscribe({});
